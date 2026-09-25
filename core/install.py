@@ -8,8 +8,8 @@ $SOCIAL_AGENT_HOME)::
                          versioned <timestamp>/ snapshots + latest pointer
     audit/               journal.jsonl + runner.pid live here
     projects/            Kdenlive/Shotcut projects + render work dirs
-    accounts/            per-account files (browser profiles, personas)
-    identity/            accounts/ browser_profiles/ permissions/
+    accounts/            per-account files (personas, notes)
+    identity/            accounts/ host_sessions/ permissions/
                          fingerprints/ identities.db
     workspaces/          per-platform workspaces (shared core NOT duplicated)
     cache/               disposable downloads / temp media
@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 LAYOUT_DIRS = ("backups/manifests", "backups/blobs",
                "backups/restore_staging", "audit", "projects",
                "accounts", "cache",
-               "identity/accounts", "identity/browser_profiles",
+               "identity/accounts", "identity/host_sessions",
                "identity/permissions", "identity/fingerprints",
                "workspaces")
 

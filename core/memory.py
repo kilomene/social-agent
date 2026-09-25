@@ -76,7 +76,9 @@ CREATE TABLE IF NOT EXISTS relations (
 """,
     # v10: memory becomes the center of the system. New tables:
     #   conversations   — agent<->user turns worth remembering
-    #   browser_sessions— registry of persistent browser profiles per account
+    #   browser_sessions— registry of host-browser sessions per account
+    #                     (which host agent + live session executed what;
+    #                     written when tickets are claimed/fulfilled)
     #   missions        — pending + active + completed mission records
     #   actions_ledger  — every completed action, keyed by idempotency key
     #   scheduler_jobs  — scheduler state (survives restarts)
@@ -974,11 +976,14 @@ SESSION_STATUSES = ("new", "login_pending", "active", "challenge",
 
 def session_register(home, account_label, profile_dir, platform,
                      identity_id=""):
-    """Register (or refresh) a persistent browser profile in memory.
+    """Register (or refresh) a host-browser session in memory.
 
-    This is the memory-side registry; the on-disk browser.json sidecar
-    (browser/session.py) stays the live session file. Both must agree —
-    the resume engine cross-checks them."""
+    Host-browser model: the repo never drives a browser itself. When the
+    external agent claims/fulfills an execution ticket in its own live browser,
+    the claim is recorded here (which host agent + live session). The
+    ``profile_dir`` argument is vestigial (kept for schema stability);
+    host session ids are recorded via ``hands.tickets``.
+    """
     init_db(home)
     cx = connect(home)
     try:

@@ -1398,190 +1398,210 @@ def exam_56_crash_recovery_skip_and_resume():
     return ex
 
 
-def write_browser_policy(path, ack=()):
-    """Minimal policy for browser exams: generous rate limits, ack list.
+# ------------------------------------------------- ticket exams (brain -> hands) ---
 
-    Note: there is no `backend` config key — the browser is the only
-    backend. Nothing here selects or mentions an API.
-    """
-    lines = ["version: 1", "defaults:", '  mode: "propose"',
-             "rate_limits:", "  default:",
-             "    actions_per_hour: 1000", "    actions_per_day: 10000",
-             "quiet_hours:", "  enabled: false",
-             "browser:", "  active_hours:", "    enabled: false",
-             "tos:", "  acknowledged_risk:"]
-    for p in ack:
-        lines.append(f"    - {p}")
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines) + "\n")
-    return path
+# The repo is BRAIN-only: it never drives a browser. Approving a proposal
+# ISSUES a machine-readable execution ticket (hands/tickets.py); an external
+# agent claims it and fulfills it visibly in its own browser, and the
+# operator confirms via the existing engage done / approval flow.
+# Tickets carry the ToS / approval / rate-limit receipts and are idempotent
+# (a ticket can never be fulfilled twice).
+
+_CRED_PAT = re.compile(
+    r"(password|passwd|pwd|secret|credential|api[-_ ]?key|apikey|"
+    r"private[-_ ]?key|access[-_ ]?token|auth[-_ ]?token|bearer|"
+    r"client[-_ ]?secret|session[-_ ]?token|cookie)",
+    re.IGNORECASE)
 
 
-def exam_57_browser_x_refused_without_ack():
-    ex = Exam("exam-57", "Browser action on X refused without acknowledged_risk")
+def _credish_names(obj):
+    """All dict key names in a nested structure (credential tripwire)."""
+    names = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                names.append(str(k))
+                walk(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                walk(v)
+    walk(obj)
+    return names
+
+
+def _ticket_id_from_approve(stdout):
+    m = re.search(r"ticket (tkt-\w+):", stdout)
+    return m.group(1) if m else ""
+
+
+def exam_57_approval_issues_ticket():
+    ex = Exam("exam-57", "Approving a proposal issues a machine-readable execution ticket")
     home = fresh_home()
-    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
-    r = run(home, pol, "browser", "login", "--account", "main",
-            "--platform", "x", "--simulate")
-    ex.check("simulated login exits 0", r.returncode == 0,
+    setup_account(home)
+    r = run(home, None, "engage", "like", "--platform", "tiktok",
+            "--account", "main", "--target", "vid57")
+    ex.check("proposal created as dry-run", r.returncode == 0 and "DRY-RUN" in r.stdout)
+    aid = state(home, "actions.json")[0]["id"]
+    r = run(home, None, "engage", "approve", aid)
+    ex.check("explicit approval succeeds", r.returncode == 0, r.stderr.strip())
+    tid = _ticket_id_from_approve(r.stdout)
+    ex.check("approval announces the ticket id", bool(tid), r.stdout.strip()[:120])
+    # the approval queue item carries the ticket id
+    pend = state(home, "approvals/pending.json", [])
+    item = next((i for i in pend if i.get("ticket_id") == tid), None)
+    ex.check("approved item stores ticket_id", item is not None,
+             str([(i["id"], i.get("ticket_id")) for i in pend])[:120])
+    r = run(home, None, "ticket", "show", tid, "--json")
+    ex.check("ticket show --json emits raw ticket JSON", r.returncode == 0,
              r.stderr.strip()[:80])
-    r = run(home, pol, "browser", "act", "--account", "main",
-            "--platform", "x", "--action", "like",
-            "--target", "https://x.com/s/57", "--simulate")
-    ex.check("X like refused (exit 2)", r.returncode == 2,
+    ticket = json.loads(r.stdout)
+    action = state(home, "actions.json")[0]
+    ex.check("ticket carries the action", ticket["action"] == "like",
+             ticket["action"])
+    ex.check("ticket carries the platform", ticket["platform"] == "tiktok")
+    ex.check("ticket carries the account", ticket["account"] == action["account"],
+             ticket["account"])
+    ex.check("ticket carries the target", ticket["target"] == "vid57",
+             ticket["target"])
+    ex.check("ticket carries the parameters", ticket["parameters"]["target"] == "vid57",
+             str(ticket["parameters"])[:80])
+    ex.check("ticket has an idempotency key", ticket["idem_key"].startswith("ticket:"),
+             ticket["idem_key"])
+    ex.check("ticket starts as issued", ticket["status"] == "issued")
+    receipts = ticket.get("receipts", {})
+    for name in ("tos", "approval", "rate_limit"):
+        ex.check(f"receipt present: {name}", name in receipts,
+                 str(sorted(receipts))[:80])
+    ex.check("approval receipt names the approval id",
+             item is not None and
+             receipts.get("approval", {}).get("approval_id") == item["id"])
+    ex.check("ticket has step-by-step instructions",
+             len(ticket.get("steps", [])) >= 3)
+    # credential tripwire: no credential-like fields or smuggled values
+    bad = [n for n in _credish_names(ticket) if _CRED_PAT.search(n)]
+    ex.check("no credential-like fields in ticket JSON", not bad, str(bad)[:100])
+    blob = json.dumps(ticket)
+    ex.check("no credential-looking values smuggled in",
+             not any(w in blob.lower() for w in
+                     ("password=", "passwd=", "api_key=", "client_secret=")),
+             blob[-120:])
+    return ex
+
+
+def exam_58_mock_hands_fulfills_exactly_once():
+    ex = Exam("exam-58", "Mock hands backend claims + fulfills a ticket exactly once")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "engage", "comment", "--platform", "tiktok",
+        "--account", "main", "--target", "vid58", "--text", "Great breakdown!")
+    aid = state(home, "actions.json")[0]["id"]
+    r = run(home, None, "engage", "approve", aid)
+    tid = _ticket_id_from_approve(r.stdout)
+    ex.check("ticket issued on approval", bool(tid))
+    r = run(home, None, "ticket", "claim", tid, "--agent", "muse",
+            "--session", "live-58")
+    ex.check("external agent claims the ticket", r.returncode == 0 and
+             "claimed by muse" in r.stdout, r.stdout.strip()[:120])
+    # the mock hands backend performs the ticket's steps and returns evidence
+    from hands import tickets as _tickets
+    from hands.backend import MockHandsBackend
+    backend = MockHandsBackend()
+    evidence = backend.fulfill(_tickets.get(home, tid))
+    ex.check("mock backend returns evidence", bool(evidence),
+             evidence[:120])
+    r = run(home, None, "ticket", "fulfill", tid, "--evidence", evidence,
+            "--session", "live-58")
+    ex.check("fulfill records the evidence", r.returncode == 0 and
+             "fulfilled" in r.stdout, r.stdout.strip()[:120])
+    got = _tickets.get(home, tid)
+    ex.check("status is fulfilled", got["status"] == "fulfilled")
+    ex.check("evidence stored on the ticket",
+             got["fulfillment"]["evidence"] == evidence)
+    ex.check("mock backend recorded the fulfillment", backend.fulfilled == [tid])
+    sessions = _tickets.list_host_sessions(home)
+    ex.check("host session registry records the fulfilled ticket",
+             tid in sessions.get("live-58", {}).get("tickets_fulfilled", []),
+             str(list(sessions))[:80])
+    # second fulfill is refused — the never-repeat guarantee
+    r = run(home, None, "ticket", "fulfill", tid, "--evidence", evidence,
+            "--session", "live-58")
+    ex.check("second fulfill is refused",
+             "cannot move to fulfilled" in (r.stdout + r.stderr),
+             (r.stdout + r.stderr).strip()[:120])
+    ex.check("ticket fulfilled exactly once (status unchanged)",
+             _tickets.get(home, tid)["status"] == "fulfilled")
+    return ex
+
+
+def exam_59_tos_refusal_never_becomes_ticket():
+    ex = Exam("exam-59", "A ToS refusal blocks a proposal from ever becoming a ticket")
+    home = fresh_home()
+    run(home, None, "accounts", "add", "--platform", "x",
+        "--username", "examuser", "--label", "main")
+    r = run(home, None, "engage", "like", "--platform", "x",
+            "--account", "main", "--target", "vx1")
+    ex.check("X-automation like refused (exit 2)", r.returncode == 2,
              f"exit={r.returncode}")
-    ex.check("refusal names the ToS prohibition",
-             "ToS refusal" in r.stderr and "prohibited" in r.stderr,
-             r.stderr.strip()[:120])
-    ex.check("no advisory logged without acknowledgment",
-             not os.path.exists(
-                 os.path.join(home, "audit", "tos_acknowledgments.jsonl")))
+    ex.check("refusal is a ToS refusal (guard order: ToS first)",
+             "ToS" in r.stderr, r.stderr.strip()[:160])
+    ex.check("no proposal was created", state(home, "actions.json", []) == [])
+    ex.check("no approval item was queued",
+             state(home, "approvals/pending.json", []) == [])
+    ex.check("no ticket was ever issued", state(home, "tickets.json", []) == [])
+    refusals = [json.loads(l) for l in open(os.path.join(home, "refusals.jsonl"))]
+    ex.check("refusal logged with ToS reason",
+             len(refusals) == 1 and "ToS" in refusals[0]["reason"],
+             str(refusals[0])[:120] if refusals else "no refusals file")
     return ex
 
 
-def exam_58_browser_x_proceeds_with_ack():
-    ex = Exam("exam-58", "With tos.acknowledged_risk:[x], X proceeds + loud advisory")
+def exam_60_crash_claimed_ticket_flagged_no_double_fulfill():
+    ex = Exam("exam-60", "Crash recovery flags claimed-but-unfinished tickets; resume never double-fulfills")
     home = fresh_home()
-    pol = write_browser_policy(os.path.join(home, "policy.yaml"), ack=["x"])
-    run(home, pol, "browser", "login", "--account", "main",
-        "--platform", "x", "--simulate")
-    r = run(home, pol, "browser", "act", "--account", "main",
-            "--platform", "x", "--action", "like",
-            "--target", "https://x.com/s/58", "--simulate")
-    ex.check("X like proceeds (exit 0)", r.returncode == 0,
+    setup_account(home)
+    run(home, None, "engage", "like", "--platform", "tiktok",
+        "--account", "main", "--target", "vid60")
+    aid = state(home, "actions.json")[0]["id"]
+    r = run(home, None, "engage", "approve", aid)
+    tid = _ticket_id_from_approve(r.stdout)
+    ex.check("ticket issued on approval", bool(tid))
+    r = run(home, None, "ticket", "claim", tid, "--agent", "muse",
+            "--session", "live-60")
+    ex.check("external agent claimed the ticket", "claimed by muse" in r.stdout)
+    # --- crash: the agent restarts; the resume engine must FLAG, not fulfill ---
+    r = run(home, None, "recover", "--full")
+    ex.check("full resume runs clean", r.returncode == 0,
              (r.stderr.strip() + r.stdout.strip())[:120])
-    ex.check("loud advisory printed",
-             "ACKNOWLEDGED-RISK ADVISORY" in r.stderr, r.stderr.strip()[:80])
-    ex.check("advisory states the plain risk",
-             "suspend or ban" in r.stderr, r.stderr.strip()[-80:])
-    log = os.path.join(home, "audit", "tos_acknowledgments.jsonl")
-    ex.check("advisory recorded to audit log",
-             os.path.exists(log) and '"platform": "x"' in open(log).read(),
-             log)
-    ex.check("action steps executed",
-             "OK (2 steps)" in r.stdout, r.stdout.strip()[:80])
-    return ex
-
-
-def exam_59_browser_profile_persists():
-    ex = Exam("exam-59", "browser login creates the persistent profile dir")
-    home = fresh_home()
-    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
-    r = run(home, pol, "browser", "login", "--account", "main",
-            "--platform", "tiktok", "--simulate")
-    ex.check("login exits 0", r.returncode == 0, r.stderr.strip()[:80])
-    pdir = os.path.join(home, "accounts", "main", "browser-profile")
-    ex.check("profile dir created", os.path.isdir(pdir), pdir)
-    sidecar = os.path.join(home, "accounts", "main", "browser.json")
-    ex.check("sidecar records the platform",
-             os.path.exists(sidecar) and
-             json.load(open(sidecar)).get("platform") == "tiktok",
-             sidecar)
-    r = run(home, pol, "browser", "status")
-    ex.check("status lists the profile", "main" in r.stdout,
+    ex.check("resume flags the claimed-but-unfinished ticket",
+             tid in r.stdout and "claimed but not fulfilled" in r.stdout,
+             r.stdout[-400:])
+    ex.check("resume did NOT fulfill it (still claimed)",
+             state(home, "tickets.json")[0]["status"] == "claimed")
+    # the external agent then fulfills it exactly once
+    r = run(home, None, "ticket", "fulfill", tid,
+            "--evidence", "liked, heart filled (mock browser card)",
+            "--session", "live-60")
+    ex.check("external agent fulfills once", "fulfilled" in r.stdout and
+             state(home, "tickets.json")[0]["status"] == "fulfilled",
              r.stdout.strip()[:120])
-    # second login is idempotent (tops up, never wipes)
-    run(home, pol, "browser", "login", "--account", "main",
-        "--platform", "tiktok", "--simulate")
-    ex.check("re-login keeps the profile dir", os.path.isdir(pdir), pdir)
+    r = run(home, None, "ticket", "fulfill", tid,
+            "--evidence", "liked again", "--session", "live-60")
+    ex.check("second fulfill refused after resume",
+             "cannot move to fulfilled" in (r.stdout + r.stderr),
+             (r.stdout + r.stderr).strip()[:120])
+    from core import resume_engine as rec
+    dones = [e for e in rec._read_entries(home)
+             if e.get("action_type") == "ticket-done"
+             and e.get("target") == tid
+             and e.get("status") == "completed"]
+    ex.check("exactly one completed fulfill journal entry", len(dones) == 1,
+             f"{len(dones)} entries")
     return ex
 
 
-def exam_60_browser_like_uses_rate_limits():
-    ex = Exam("exam-60", "Browser-backed like goes through the rate-limit controller")
-    home = fresh_home()
-    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
-    run(home, pol, "browser", "login", "--account", "main",
-        "--platform", "tiktok", "--simulate")
-    r = run(home, pol, "browser", "act", "--account", "main",
-            "--platform", "tiktok", "--action", "like",
-            "--target", "https://www.tiktok.com/v/60", "--simulate")
-    ex.check("tiktok like proceeds (no ToS block)", r.returncode == 0,
-             (r.stderr.strip() + r.stdout.strip())[:120])
-    r = run(home, pol, "ratelimit", "status")
-    ex.check("browser_goto bucket tracked",
-             "tiktok:browser_goto" in r.stdout, r.stdout.strip()[:160])
-    ex.check("browser_click bucket tracked",
-             "tiktok:browser_click" in r.stdout, r.stdout.strip()[:160])
-    return ex
-
-
-def exam_61_browser_challenge_pauses_with_notification():
-    ex = Exam("exam-61", "2FA challenge pauses the session + notifies the user")
-    home = fresh_home()
-    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
-    run(home, pol, "browser", "login", "--account", "main",
-        "--platform", "instagram", "--simulate")
-    sys.path.insert(0, REPO)
-    from browser import session as _bsess
-    _bsess.mark_challenge(home, "main", kind="2fa")
-    notes = state(home, "notifications.json", [])
-    ex.check("user notified of the challenge",
-             any(n.get("kind") == "browser_challenge" for n in notes),
-             str([n.get("kind") for n in notes])[:80])
-    ex.check("notification says the agent paused",
-             any("PAUSED" in n.get("text", "") for n in notes),
-             str(notes[-1].get("text", ""))[:100])
-    r = run(home, pol, "browser", "act", "--account", "main",
-            "--platform", "instagram", "--action", "like",
-            "--target", "https://www.instagram.com/p/61", "--simulate")
-    ex.check("acting refused while challenge is open", r.returncode != 0,
-             f"exit={r.returncode}")
-    ex.check("refusal points at headed login",
-             "browser login" in (r.stderr + r.stdout),
-             (r.stderr + r.stdout).strip()[:120])
-    return ex
-
-
-def exam_62_browser_only_no_api_surface():
-    ex = Exam("exam-62", "X like executes via the browser backend; no API credential anywhere")
-    home = fresh_home()
-    pol = write_browser_policy(os.path.join(home, "policy.yaml"), ack=["x"])
-    run(home, pol, "browser", "login", "--account", "main",
-        "--platform", "x", "--simulate")
-    r = run(home, pol, "browser", "act", "--account", "main",
-            "--platform", "x", "--action", "like",
-            "--target", "https://x.com/s/62", "--simulate")
-    ex.check("X like proceeds via browser (exit 0)", r.returncode == 0,
-             (r.stderr.strip() + r.stdout.strip())[:120])
-    ex.check("steps executed through the browser backend",
-             "browser act like [x/main]: OK" in r.stdout,
-             r.stdout.strip()[:120])
-    # no API credential exists anywhere in the state dir
-    cred_pat = re.compile(r"(?i)api[_-]?key|api[_-]?secret|client[_-]?secret|"
-                          r"bearer\s+ey|oauth.*token")
-    bad = []
-    for dp, dn, fn in os.walk(home):
-        if "__pycache__" in dn:
-            dn.remove("__pycache__")
-        for f in fn:
-            p = os.path.join(dp, f)
-            try:
-                t = open(p, encoding="utf-8", errors="strict").read()
-            except (UnicodeDecodeError, OSError):
-                continue
-            if cred_pat.search(t):
-                bad.append(os.path.relpath(p, home))
-    ex.check("no API credential material in state", not bad, str(bad)[:100])
-    # the backend switch itself is gone from the shipped code
-    sys.path.insert(0, REPO)
-    from platforms.browser import backend as _backend
-    ex.check("no backend_for() selector exists",
-             not hasattr(_backend, "backend_for"))
-    ex.check("act() takes no backend argument",
-             "backend" not in _backend.act.__code__.co_varnames)
-    src = open(os.path.join(REPO, "platforms", "browser",
-                            "backend.py")).read()
-    ex.check("backend.py declares browser-only, no api option",
-             "no API backend" in src and
-             not re.search(r"backend\s*:\s*[\"']?api|\"api\"\s*=\s*\"backend\"",
-                           src, re.I),
-             "browser-only denial present")
-    return ex
-
-
-def exam_63_crash_mid_mission_no_duplicates():
-    ex = Exam("exam-63", "Kill mid-mission: full resume replays the journal, zero duplicated actions")
+def exam_61_crash_mid_mission_no_duplicates():
+    ex = Exam("exam-61", "Kill mid-mission: full resume replays the journal, zero duplicated actions")
     home = fresh_home()
     setup_account(home)
     sys.path.insert(0, REPO)
@@ -1617,8 +1637,8 @@ def exam_63_crash_mid_mission_no_duplicates():
     return ex
 
 
-def exam_64_backup_portability():
-    ex = Exam("exam-64", "Backup exported from one home imports cleanly into a fresh home")
+def exam_62_backup_portability():
+    ex = Exam("exam-62", "Backup exported from one home imports cleanly into a fresh home")
     home = fresh_home()
     sys.path.insert(0, REPO)
     from core import memory as mem
@@ -1656,8 +1676,8 @@ def exam_64_backup_portability():
     return ex
 
 
-def exam_65_remote_sync_consent_and_encryption_gated():
-    ex = Exam("exam-65", "Remote sync refuses without consent; encrypted folder roundtrip works")
+def exam_63_remote_sync_consent_and_encryption_gated():
+    ex = Exam("exam-63", "Remote sync refuses without consent; encrypted folder roundtrip works")
     home = fresh_home()
     setup_account(home)
     run(home, None, "backup", "snapshot", "--versioned")
@@ -1690,8 +1710,8 @@ def exam_65_remote_sync_consent_and_encryption_gated():
     return ex
 
 
-def exam_66_cache_excluded_from_snapshots():
-    ex = Exam("exam-66", "Cache/temp files are never in a versioned snapshot")
+def exam_64_cache_excluded_from_snapshots():
+    ex = Exam("exam-64", "Cache/temp files are never in a versioned snapshot")
     home = fresh_home()
     sys.path.insert(0, REPO)
     from core import backup as bmod
@@ -1720,8 +1740,8 @@ def exam_66_cache_excluded_from_snapshots():
     return ex
 
 
-def exam_67_watcher_checkpoint_resume_per_platform():
-    ex = Exam("exam-67", "Kill mid-poll: resume replays checkpoints, no missed/duplicate events")
+def exam_65_watcher_checkpoint_resume_per_platform():
+    ex = Exam("exam-65", "Kill mid-poll: resume replays checkpoints, no missed/duplicate events")
     home = fresh_home()
     setup_account(home)
     sys.path.insert(0, REPO)
@@ -1758,8 +1778,8 @@ def exam_67_watcher_checkpoint_resume_per_platform():
     return ex
 
 
-def exam_68_duplicate_watcher_registration_refused():
-    ex = Exam("exam-68", "Duplicate-named watcher registration is refused")
+def exam_66_duplicate_watcher_registration_refused():
+    ex = Exam("exam-66", "Duplicate-named watcher registration is refused")
     home = fresh_home()
     setup_account(home)
     sys.path.insert(0, REPO)
@@ -1796,8 +1816,8 @@ def exam_68_duplicate_watcher_registration_refused():
     return ex
 
 
-def exam_69_linkedin_watcher_lifecycle():
-    ex = Exam("exam-69", "LinkedIn watcher lifecycle via the shared Watcher Engine")
+def exam_67_linkedin_watcher_lifecycle():
+    ex = Exam("exam-67", "LinkedIn watcher lifecycle via the shared Watcher Engine")
     home = fresh_home()
     setup_account(home)
     sys.path.insert(0, REPO)
@@ -1894,19 +1914,17 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_54_risky_action_recovery_point,
          exam_55_restore_dry_run_safety,
          exam_56_crash_recovery_skip_and_resume,
-         exam_57_browser_x_refused_without_ack,
-         exam_58_browser_x_proceeds_with_ack,
-         exam_59_browser_profile_persists,
-         exam_60_browser_like_uses_rate_limits,
-         exam_61_browser_challenge_pauses_with_notification,
-         exam_62_browser_only_no_api_surface,
-         exam_63_crash_mid_mission_no_duplicates,
-         exam_64_backup_portability,
-         exam_65_remote_sync_consent_and_encryption_gated,
-         exam_66_cache_excluded_from_snapshots,
-         exam_67_watcher_checkpoint_resume_per_platform,
-         exam_68_duplicate_watcher_registration_refused,
-         exam_69_linkedin_watcher_lifecycle]
+         exam_57_approval_issues_ticket,
+         exam_58_mock_hands_fulfills_exactly_once,
+         exam_59_tos_refusal_never_becomes_ticket,
+         exam_60_crash_claimed_ticket_flagged_no_double_fulfill,
+         exam_61_crash_mid_mission_no_duplicates,
+         exam_62_backup_portability,
+         exam_63_remote_sync_consent_and_encryption_gated,
+         exam_64_cache_excluded_from_snapshots,
+         exam_65_watcher_checkpoint_resume_per_platform,
+         exam_66_duplicate_watcher_registration_refused,
+         exam_67_linkedin_watcher_lifecycle]
 
 
 def main():

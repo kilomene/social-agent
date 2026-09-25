@@ -3,7 +3,9 @@
 An autonomous social-media monitoring toolkit for AI agents. Poll-based
 watchers observe TikTok, X, Instagram, Facebook, YouTube, Reddit, and LinkedIn and
 **propose** actions; acting (post, like, comment, follow, retweet, DM) is
-dry-run by default and requires explicit per-action approval. Pure Python
+dry-run by default and requires explicit per-action approval. Approved
+proposals become structured **execution tickets** fulfilled live in the
+external agent's own browser (see `docs/HOST_BROWSER.md`). Pure Python
 stdlib — no dependencies, no binaries, no credentials stored.
 
 ## Install
@@ -247,36 +249,40 @@ social-agent recover                            # replay the journal after a cra
 social-agent recover --execute                  # also re-execute safe local renders
 ```
 
-## Persistent browser automation (no APIs)
+## Execution: execution tickets + the external agent's live browser
 
-Every platform is driven through a real Chromium browser
-([Playwright](https://playwright.dev)) — no APIs, no API keys. One
-persistent profile per account (`<home>/accounts/<label>/browser-profile/`);
-logins survive restarts like your own browser.
+**social-agent is the brain; the external agent is the hands.** The repo
+proposes, gates, and logs — it never drives a platform itself. No APIs,
+no API keys, and no bundled browser automation (no Playwright/Chromium,
+no persistent profiles owned by the repo).
+
+Approving a proposal issues a machine-readable **execution ticket**
+(lifecycle: `issued → claimed → fulfilled`):
 
 ```bash
-pip install playwright && playwright install chromium   # one-time engine setup
-social-agent browser login --account main --platform x  # headed: YOU sign in
-social-agent browser act --account main --platform x --action like \
-  --target https://x.com/some/status/123 --simulate     # offline dry run
-social-agent browser status
+social-agent tickets                          # list execution tickets
+social-agent ticket show <ticket-id> --json   # machine-readable ticket JSON
+# ... the external agent (Muse) claims the ticket and fulfills it LIVE in
+# its own browser — the browser card the user watches ...
+social-agent ticket claim <ticket-id> --agent Muse --session <session-id>
+social-agent ticket fulfill <ticket-id> --evidence "posted, https://..."  # idempotent
+social-agent ticket cancel <ticket-id> --reason "..."   # withdraw a ticket
 ```
 
-- First login is **headed** — the human signs in (agent never sees the
-  password). 2FA/challenge → the agent **pauses, notifies you, and waits**;
-  it never tries to bypass.
-- Every browser action is human-paced (randomized delays,
-  scroll-before-click, active hours), routed through the central
-  rate-limit controller, and journaled with an idempotency key (a crashed
-  session resumes, never repeats a post).
-- Per-platform recipes: `platforms/browser/` (selectors are a maintenance
-  surface — see `docs/browser-ops.md`).
-- **ToS honesty:** X browser-driven engagement is `prohibited` by default
-  (X requires API-only automation) and fails closed. Explicit opt-in only:
-  `tos.acknowledged_risk: [x]` in policy.yaml downgrades it to restricted
-  with a loud logged advisory (account suspension/ban risk) recorded in
-  `audit/tos_acknowledgments.jsonl`. Without the acknowledgment, the
-  prohibition stands — the agent never silently violates terms.
+- A plan executes **at most once**: the event journal carries an
+  idempotency key per plan, so a crash mid-execution resumes instead of
+  repeating (no duplicate posts).
+- If a step fails, the host records the failure as evidence and does
+  **not** retry blindly — the plan is re-planned or decided by a human.
+- The plan's steps were ToS-checked at approval time; the host must not
+  improvise out-of-scope actions. See `docs/HOST_BROWSER.md`.
+
+**ToS honesty:** X browser-driven engagement is `prohibited` by default
+(X requires API-only automation) and fails closed. Explicit opt-in only:
+`tos.acknowledged_risk: [x]` in policy.yaml downgrades it to restricted
+with a loud logged advisory (account suspension/ban risk) recorded in
+`audit/tos_acknowledgments.jsonl`. Without the acknowledgment, the
+prohibition stands — the agent never silently violates terms.
 
 ## Heartbeats
 
@@ -310,12 +316,12 @@ core/watcher_engine/    SINGLE watcher engine: lifecycle, scheduling, event disp
   watchers/             the 15 watcher classes, exactly once (no per-platform copies)
   fixtures/             sample JSON feeds so everything runs offline
 platforms/<name>/       per-platform tree — registration + views ONLY, never shared core
-  __init__.py           adapter spec (declarative, browser-only)
+  __init__.py           adapter spec (declarative, no-API: execution via execution tickets
+                        in the external agent's live browser)
   terms.md / tos_rules.yaml
                         per-platform ToS (fail-closed; checked first in the guard order)
   watchers/             REGISTRATION manifest (which watchers + defaults)
   memory/               namespaced VIEW into the shared DB (no .db copy)
-  browser_profile/      POINTER to the shared identity profile (no data)
   workspace/            shipped workspace template (workspace.yaml + state/)
                         shipped: tiktok, x, instagram, facebook, youtube, reddit, linkedin
 approvals/              unified human approval queue (pending/approved/rejected/held/rate_limited)
@@ -344,7 +350,8 @@ catalogs/               curated tools / schedulers / analytics links (browser-on
 skills/social-agent/    SKILL.md so any agent can install and use this
 tests/                  pytest suite (CLI e2e, watcher units, policy enforcement)
 exams/                  scenario exams, all recorded in RESULTS.md
-docs/                   heartbeat-integration.md
+docs/                   HOST_BROWSER.md (host execution model), platform-workspaces.md,
+                        heartbeat-integration.md, listen-latency.md
 missions/               example mission file
 ```
 
@@ -366,7 +373,10 @@ Read `policy/guardrails.md`. In short:
   cooldowns and like caps block spam patterns.
 - Profile changes always need explicit approval — no exceptions.
 - Conservative per-platform hourly/daily caps; the CLI refuses over-cap actions.
-- No credentials in the repo or in state — sign-in happens in your own browser.
+- No credentials in the repo or in state — logins live ONLY in the host's
+  Secure Vault, and sign-in in the host's live Chromium goes through the
+  vault-backed browser flow with the user's approval. The agent never
+  sees or handles raw passwords, tokens, or 2FA codes.
 - Prohibited by design: mass follow/unfollow, comment spam, astroturfing.
 - Growth is organic-only and sits under the ToS layer (guardrails §13):
   playbooks inform content choices, they never authorize acting operations.
@@ -388,24 +398,25 @@ Read `policy/guardrails.md`. In short:
 
 ## Honest limitations
 
-- **The CLI never performs a live action.** Posting/liking/commenting happen in
-  a real browser session driven by you or your agent; the CLI proposes,
-  gates, and logs.
+- **The CLI never performs a live action.** Posting/liking/commenting are
+  performed by the external agent in its own live browser via approved
+execution tickets (see `docs/HOST_BROWSER.md`); the CLI proposes, gates, and logs.
 - **No streaming.** Watchers poll on an interval you choose; there is no
   realtime push.
-- **Browser-only by design.** There are no API clients, no API keys, and no
-  API backend anywhere in this repo — every platform is driven through the
-  account's persistent browser profile. There is no config switch to change
-  this; `platforms/<name>/backend` does not exist as a concept.
+- **No-API by design.** There are no API clients, no API keys, and no
+  API backend anywhere in this repo — every platform action is performed
+  in the external agent's live browser. The external agent's live browser is not an
+  API. There is no config switch to change this; `platforms/<name>/backend`
+  does not exist as a concept.
 - **Platform gaps are documented, not hidden** — see `platforms/capabilities.md`.
-- **X's terms prohibit non-API automation outright**, and this tool is
-  browser-driven by the owner's explicit order: automated likes, comments,
-  follows, reposts, DMs, and browser-based data collection on X are refused
-  by the CLI rather than faked. They proceed only under the explicit
-  `tos.acknowledged_risk: [x]` opt-in, which records the owner's informed
-  acceptance of the suspension risk.
-- Fixture-based offline mode is for development and tests; live reading needs a
-  logged-in browser session.
+- **X's terms prohibit non-API automation outright**, and this tool
+  performs through a live browser by the owner's explicit order:
+  browser-driven likes, comments, follows, reposts, DMs, and data
+  collection on X are refused by the CLI rather than faked. They proceed
+  only under the explicit `tos.acknowledged_risk: [x]` opt-in, which
+  records the owner's informed acceptance of the suspension risk.
+- Fixture-based offline mode is for development and tests; live reading
+  needs the host's logged-in browser session.
 
 ## Tests & exams
 

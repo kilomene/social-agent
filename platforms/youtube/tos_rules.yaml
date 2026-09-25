@@ -32,7 +32,7 @@ actions:
       - https://www.youtube.com/t/terms?gl=DE
   automated_posting:
     status: restricted
-    basis: "Accessing the service via automated means (robots, scrapers) is prohibited except for public search engines or with prior written permission. This tool is browser-only and never uses the YouTube API; actual uploads are performed through the persistent browser session in YouTube Studio with the user's logged-in account. It only drafts metadata and records explicit human approval, never publishing by itself."
+    basis: "Accessing the service via automated means (robots, scrapers) is prohibited except for public search engines or with prior written permission. This tool never uses the YouTube API; actual uploads are fulfilled by the external agent visibly in its own browser via an approved execution ticket, in YouTube Studio with the user's logged-in session. It only drafts metadata and records explicit human approval, never publishing by itself."
     sources:
       - https://www.youtube.com/t/terms?gl=DE
   automated_data_collection:

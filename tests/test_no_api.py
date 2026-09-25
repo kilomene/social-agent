@@ -13,6 +13,11 @@ Deliberate exclusions (documented, not loopholes):
   that the leak detector fires.
 - `security/checklist.md` — states the agent "never asks for passwords,
   API keys, or tokens" (a prohibition, not an integration).
+- `hands/tickets.py` — its "Credential rule" docstring states tickets
+  NEVER contain credentials ("No password / token / secret / API-key
+  fields exist ..."): a prohibition, not an integration. The exact
+  sentence is stripped before the credential scan so the tripwire keeps
+  watching the rest of the file (see PROHIBITION_PHRASES).
 - `platforms/<name>/terms.md` + `tos_rules.yaml` — factual ToS
   *documentation* of what each platform's own rules say (the ToS layer
   must know the rules to enforce them). They never present an API as an
@@ -37,12 +42,25 @@ API_DOC_PAT = re.compile(
 OAUTH_PAT = re.compile(r"\boauth\b", re.I)
 
 # source areas that must never mention API credentials or OAuth flows
-CODE_DIRS = ["platforms", "browser", "core", "policy", "bin", "catalogs"]
+# ("browser" was removed by the brain/hands refactor — the repo drives no
+# browser itself; "hands" is the execution-ticket handoff to the host agent)
+CODE_DIRS = ["platforms", "hands", "core", "policy", "bin", "catalogs"]
 
 # files allowed to name secrets (leak detector) or prohibit them
 ALLOWLIST = {
     "security/secrets.py",
     "security/checklist.md",
+}
+
+# Documented prohibition sentences (not integrations): stripped from the
+# file's text BEFORE the credential scan, so the tripwire keeps watching
+# the rest of the file. Additions here must be prohibitions ("never ..."),
+# never actual credential config.
+PROHIBITION_PHRASES = {
+    "hands/tickets.py": [
+        "No password / token\n/ secret / API-key fields exist in the schema "
+        "or in stored ticket JSON.",
+    ],
 }
 
 
@@ -78,9 +96,13 @@ def _iter_code_config():
 def _read(p):
     try:
         with open(p, encoding="utf-8", errors="strict") as fh:
-            return fh.read()
+            text = fh.read()
     except (UnicodeDecodeError, OSError):
         return ""
+    rel = os.path.relpath(p, REPO)
+    for phrase in PROHIBITION_PHRASES.get(rel, ()):
+        text = text.replace(phrase, "")
+    return text
 
 
 def test_no_backend_selector():

@@ -110,4 +110,6 @@ def test_listen_once_over_fixture_watchers(home, tmp_path):
     assert r.returncode == 0, r.stderr
     r = cli("listen", "once", home=home)
     assert r.returncode == 0, r.stderr
-    assert "listen pass complete" in r.stdout
+    # brain/hands refactor: `listen once` prints one status line per
+    # watcher (no "listen pass complete" summary anymore)
+    assert "lw1: no new events" in r.stdout

@@ -1,10 +1,11 @@
 # Platform capabilities matrix
 
-Honest summary of what social-agent can do per platform. "Browser" means a real
-logged-in browser session in the account's persistent profile, driven by the
-user or their agent. There is no API backend: no API clients, no API keys, no
-OAuth apps — this repo contains zero platform-API integrations by the account
-owner's explicit order.
+Honest summary of what social-agent can do per platform. "Browser" means the
+external agent's own live browser — the browser card the user watches — with
+the user's own logged-in session, fulfilling approved execution tickets
+(`docs/HOST_BROWSER.md`). There is no API backend: no API clients, no API
+keys, no OAuth apps — this repo contains zero platform-API integrations by
+the account owner's explicit order.
 
 | Capability | TikTok | X | Instagram | Facebook | YouTube | Reddit | LinkedIn |
 |---|---|---|---|---|---|---|---|
@@ -22,9 +23,12 @@ owner's explicit order.
 
 ## Auth notes
 
-- **Browser session** is the only path everywhere: the user signs in with
-  their own browser in a headed first login; social-agent never sees the
-  password and never stores credentials.
+- **Browser session** is the only path everywhere: the host agent acts
+  logged-in in its own live Chromium — the user's own session, where
+  login state already exists. If sign-in is needed, it goes through the
+  vault-backed browser flow with the user's approval. social-agent
+  never sees passwords, tokens, or 2FA codes and never stores
+  credentials.
 - There is no alternative auth path. Any `backend`, `api_key`, `api_secret`,
   or OAuth config for a social platform is not supported and never was
   shipped.
@@ -32,9 +36,10 @@ owner's explicit order.
 ## Rate limits enforced by social-agent
 
 See `policy/policy.yaml` (`rate_limits`). The CLI refuses acting operations
-past the per-hour/per-day caps regardless of platform headroom. Every browser
-action flows through the central rate-limit controller — the browser is a
-backend, not a bypass.
+past the per-hour/per-day caps regardless of platform headroom. Every
+approved action is ToS-checked before a plan is minted and flows through
+the central rate-limit controller — the host's live browser is the
+execution surface, not a bypass, and it is not an API.
 
 ## Terms of Service compliance (per-platform)
 
@@ -52,9 +57,10 @@ a prohibition.
 Key platform-specific outcomes (see each `terms.md` for sources):
 
 - **X is the strict case.** X's developer guidelines require automation only
-  through the official X API and prohibit non-API automation. This tool is
-  browser-driven by the owner's explicit order, so automated likes, comments,
-  follows, reposts, DMs, and browser-based data collection are **prohibited**
+  through the official X API and prohibit non-API automation. Live
+  execution here happens in the host agent's live Chromium by the
+  owner's explicit order, so browser-based likes, comments, follows,
+  reposts, DMs, and data collection are **prohibited**
   on X. They proceed only under the explicit `tos.acknowledged_risk: [x]`
   opt-in, which downgrades the prohibition to restricted with a loud logged
   advisory stating the plain suspension risk — the owner's informed choice,

@@ -377,8 +377,9 @@ def full_resume(home, execute=False):
 
     Steps:
       1. load the latest VALID snapshot (falls back past corrupt ones),
-      2. restore browser profiles (cross-check memory registry vs disk),
-      3. restore logged-in sessions (sidecar statuses),
+      2. restore host-browser session records (which host agent + live
+         session executed what — the repo never drives a browser itself),
+      3. flag claimed-but-unfinished tickets for re-verification,
       4. replay the event journal (verify-before-repeat, never duplicates),
       5. recover unfinished missions,
       6. verify the last completed action (ledger vs journal),
@@ -391,7 +392,7 @@ def full_resume(home, execute=False):
     from core import backup as backup_mod
     from core import memory as mem_mod
     report = {
-        "snapshot": None, "browser_profiles": [], "sessions": [],
+        "snapshot": None, "host_sessions": [], "sessions": [],
         "journal": None, "missions": [], "last_action_verified": None,
         "continue_plan": [], "watchers": [],
     }
@@ -417,37 +418,24 @@ def full_resume(home, execute=False):
         report["snapshot"] = {"id": None, "valid": False,
                               "detail": "no valid snapshot found"}
 
-    # 2+3. browser profiles + sessions: memory registry vs on-disk sidecars
-    try:
-        from browser import session as sess_mod
-    except Exception:  # noqa: BLE001 - browser module optional in tests
-        sess_mod = None
-    for s in mem_mod.session_list(home):
-        label = s["account_label"]
-        disk = None
-        if sess_mod is not None:
-            try:
-                disk = sess_mod.load_session(home, label)
-            except Exception:
-                disk = None
-        profile_ok = bool(s.get("profile_dir")) and os.path.isdir(
-            s["profile_dir"])
-        mem_status = s.get("status")
-        disk_status = (disk or {}).get("status")
-        agree = (disk is None) or (disk_status in (None, mem_status))
-        report["browser_profiles"].append({
-            "account": label, "profile_dir": s.get("profile_dir"),
-            "profile_on_disk": profile_ok,
-            "memory_status": mem_status, "disk_status": disk_status,
-            "agree": agree,
+    # 2+3. host-browser sessions + claimed-but-unfinished plans.
+    # The repo never drives a browser: execution records live in the
+    # execution module's host_sessions registry. A plan in "claimed"
+    # status means the host agent started it but never marked it done —
+    # verify with the host before repeating (plans are idempotent).
+    from hands import tickets as _tickets_mod
+    for sid, s in _tickets_mod.list_host_sessions(home).items():
+        report["host_sessions"].append({
+            "session_id": sid, "agent": s.get("agent", ""),
+            "identity_id": s.get("identity_id", ""),
+            "accounts": list(s.get("account_labels", [])),
+            "tickets_fulfilled": list(s.get("tickets_fulfilled", [])),
+            "last_seen": s.get("last_seen", ""),
         })
-        report["sessions"].append({
-            "account": label, "status": disk_status or mem_status,
-            "restorable": profile_ok and (disk_status or mem_status)
-            not in ("challenge",),
-            "note": ("challenge open — resolve with headed login"
-                     if (disk_status or mem_status) == "challenge" else ""),
-        })
+    report["sessions"] = list(report["host_sessions"])
+    report["unfinished_tickets"] = [
+        p["id"] for p in _tickets_mod.list_tickets(home, status="claimed")
+    ]
 
     # 4. replay the journal (the duplicate-proof core)
     journal_report = recover(home, execute=execute)
@@ -490,11 +478,9 @@ def full_resume(home, execute=False):
 
     # 7. ordered continue-plan
     plan = []
-    for s in report["sessions"]:
-        if not s["restorable"]:
-            plan.append(f"session: re-login '{s['account']}' ({s['note']})"
-                        if s["note"] else
-                        f"session: re-login '{s['account']}' (no profile)")
+    for pid in report.get("unfinished_tickets", []):
+        plan.append(f"ticket: verify '{pid}' with the external agent before "
+                    "re-doing — claimed but never fulfilled (idempotent)")
     for m in report["missions"]:
         if m["action"] == "resume":
             plan.append(
@@ -527,18 +513,17 @@ def format_full_resume(report):
                      f" (valid={snap['valid']})")
     else:
         lines.append(f"1. snapshot: none — {snap['detail']}")
-    lines.append("2+3. browser profiles / sessions:")
-    if not report["browser_profiles"]:
-        lines.append("   (no browser sessions registered)")
-    for b in report["browser_profiles"]:
+    lines.append("2+3. host-browser sessions / claimed plans:")
+    if not report["host_sessions"]:
+        lines.append("   (no host-browser sessions recorded)")
+    for s in report["host_sessions"]:
         lines.append(
-            f"   {b['account']}: profile_on_disk={b['profile_on_disk']}"
-            f" memory={b['memory_status']} disk={b['disk_status']}"
-            f" agree={b['agree']}")
-    for s in report["sessions"]:
-        lines.append(f"   session {s['account']}: status={s['status']}"
-                     f" restorable={s['restorable']}"
-                     + (f" — {s['note']}" if s["note"] else ""))
+            f"   {s['session_id']} agent={s['agent']}"
+            f" accounts={','.join(s['accounts']) or '-'}"
+            f" tickets_fulfilled={len(s['tickets_fulfilled'])}"
+            f" last_seen={s['last_seen']}")
+    for pid in report.get("unfinished_tickets", []):
+        lines.append(f"   ticket {pid}: claimed but not fulfilled — verify with the external agent")
     lines.append("4. journal replay:")
     lines.append("   " + format_report(report["journal"]).replace(
         "\n", "\n   "))

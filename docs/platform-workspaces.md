@@ -1,35 +1,40 @@
 # Platform workspaces
 
 Every social platform gets its own source tree: `platforms/<platform>/`.
-The design is generic — ANY platform (not just the seven we ship recipes
-for) gets one via `social-agent workspace init --platform <name>`
+The design is generic — ANY platform (not just the seven we ship)
+gets one via `social-agent workspace init --platform <name>`
 (linkedin was added this way as the 7th platform).
 
 ## The tree
 
 ```
 platforms/<name>/
-  __init__.py        adapter spec (declarative, browser-only)
+  __init__.py        adapter spec (declarative, no-API: hands handoff via execution tickets
+                     fulfilled in the external agent's live browser)
   terms.md / tos_rules.yaml
   watchers/          REGISTRATION manifest (which watchers + defaults)
   memory/            namespaced VIEW into the shared DB (no .db copy)
-  browser_profile/   POINTER to the shared identity profile (no data)
   workspace/         shipped workspace template
 ```
 
 ## The two rules
 
-1. **One shared browser profile per identity, all platforms.** Platform
-   trees never own browser profiles. The profile lives at
-   `identity/browser_profiles/<identity>/profile` and is registered in
-   `identity/browser_profiles/<identity>.json` — one logged-in human
-   browser, many tabs. The tree only records a *pointer* to it.
+1. **No platform tree drives a browser.** Platform trees never own
+   browser profiles — the repo bundles no browser automation at all.
+   When the user approves a proposal, the approval issues a
+   machine-readable **execution ticket** (`issued → claimed →
+   fulfilled`); the external agent fulfills it visibly in its own
+   browser — the live browser card the user watches
+   (`docs/HOST_BROWSER.md`). `identity/host_sessions/` records which
+   external agent + live session fulfilled each ticket, with
+   evidence notes.
 2. **Platform trees NEVER duplicate shared core.** Memory, the watcher
-   engine, the browser engine, backup & recovery, the resume engine, the
-   scheduler, the event bus, the video editor, audio engine, caption
-   generator, analytics DB, and the human approval system exist exactly
-   once (see `core/SHARED_CORE.md`). `tests/test_shared_core.py` fails
-   the build if a shared-core module shows up under `platforms/`.
+   engine, the hands handoff (execution tickets), backup & recovery,
+   the resume engine, the scheduler, the event bus, the video editor,
+   audio engine, caption generator, analytics DB, and the human approval
+   system exist exactly once (see `core/SHARED_CORE.md`).
+   `tests/test_shared_core.py` fails the build if a shared-core module
+   shows up under `platforms/`.
 
 ## Watcher lifecycle per platform
 

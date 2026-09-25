@@ -4,23 +4,29 @@ Layout under ``<home>/identity/``::
 
     accounts/          per social account: handle, platform, persona file,
                        owner name            (<label>.json)
-    browser_profiles/  registry mapping accounts -> ONE shared persistent
-                       browser profile dir per identity (<id>.json)
+    host_sessions/     registry of host-browser sessions: which host agent
+                       + live session performed each fulfilled execution ticket,
+                       with evidence notes (host_sessions.json)
     permissions/       per-identity grants (<id>.json)
     fingerprints/      per-identity browser fingerprint notes (<id>.json)
     identities.db      SQLite registry tying it all together
 
-Key rule: every identity shares ONE browser profile across ALL platforms
-(one logged-in human browser, many tabs — exactly like a real user).
-Platform workspaces never get their own profiles.
+Key rule: the repo NEVER drives a browser itself. There are no persistent
+browser profiles here — execution happens via execution tickets fulfilled by an
+host agent in its own live Chromium. ``host_sessions/`` records which
+host agent + live session executed what, with evidence notes.
 
 Permissions are FAIL-CLOSED: no grant = no action. `may()` returns False
 for unknown identities, unknown actions, or missing grants.
 
 Fingerprints are human-consistency notes (the user's real UA/viewport/
-locale/timezone so automation matches their actual browser). This is
-NOT spoofing/rotation tooling — there is no fingerprint randomization
-here, by design.
+locale/timezone so the host agent's browser matches their actual
+browser). This is NOT spoofing/rotation tooling — there is no
+fingerprint randomization here, by design.
+
+Credential rule: no credentials are ever stored here. Logins live only
+in the host's Secure Vault; the agent never sees or touches
+passwords/tokens.
 """
 
 import json
@@ -32,7 +38,6 @@ from datetime import datetime, timezone
 DB_NAME = os.path.join("identity", "identities.db")
 
 ACCOUNTS_DIR = os.path.join("identity", "accounts")
-PROFILES_DIR = os.path.join("identity", "browser_profiles")
 PERMS_DIR = os.path.join("identity", "permissions")
 FINGERPRINTS_DIR = os.path.join("identity", "fingerprints")
 
@@ -118,7 +123,6 @@ def create_identity(home, name, owner_name=""):
     _write_json(home, FINGERPRINTS_DIR, iid,
                 {"identity_id": iid, "user_agent": "", "viewport": "",
                  "locale": "", "timezone": "", "notes": ""})
-    _init_shared_profile(home, iid)
     return dict(row)
 
 
@@ -148,7 +152,12 @@ def list_identities(home):
 
 
 def link_account(home, identity_id, account_label, platform, handle=""):
-    """Attach a social account to an identity (shares its browser profile)."""
+    """Attach a social account to an identity.
+
+    Execution happens via tickets fulfilled visibly in an external
+    agent's live browser —
+    there is no shared browser profile to link to anymore.
+    """
     if get_identity(home, identity_id) is None:
         raise KeyError(f"unknown identity {identity_id!r}")
     cx = _connect(home)
@@ -167,7 +176,6 @@ def link_account(home, identity_id, account_label, platform, handle=""):
                  "platform": platform, "handle": handle,
                  "owner_name": get_identity(home, identity_id).get(
                      "owner_name", "")})
-    _profile_registry_add(home, identity_id, account_label, platform)
     return get_identity(home, identity_id)
 
 
@@ -196,70 +204,6 @@ def identity_for_account(home, account_label):
         return row["identity_id"] if row else None
     finally:
         cx.close()
-
-
-# ------------------------------------------------------- browser profiles ---
-
-def _init_shared_profile(home, identity_id):
-    """One shared profile dir per identity (all platforms, one browser)."""
-    profile_dir = os.path.join(home, PROFILES_DIR, identity_id, "profile")
-    os.makedirs(profile_dir, exist_ok=True)
-    data = _read_json(home, PROFILES_DIR, identity_id) or {}
-    data.update({"identity_id": identity_id, "profile_dir": profile_dir,
-                 "accounts": data.get("accounts", []),
-                 "updated_at": utcnow(),
-                 "note": "ONE shared browser profile for every platform"
-                         " used by this identity (one human browser)."})
-    _write_json_here = os.path.join(home, PROFILES_DIR, identity_id + ".json")
-    tmp = _write_json_here + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-    os.replace(tmp, _write_json_here)
-    return profile_dir
-
-
-def _profile_registry_add(home, identity_id, account_label, platform):
-    data = _read_json(home, PROFILES_DIR, identity_id) or {}
-    accts = data.get("accounts", [])
-    entry = {"label": account_label, "platform": platform}
-    if entry not in accts:
-        accts.append(entry)
-    data["accounts"] = accts
-    data["updated_at"] = utcnow()
-    if "profile_dir" not in data:
-        data["profile_dir"] = os.path.join(
-            home, PROFILES_DIR, identity_id, "profile")
-        os.makedirs(data["profile_dir"], exist_ok=True)
-    p = os.path.join(home, PROFILES_DIR, identity_id + ".json")
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
-    os.replace(tmp, p)
-    return data
-
-
-def shared_profile_dir(home, identity_id):
-    """The single browser profile dir shared by all of an identity's
-    platforms. Created on demand (idempotent)."""
-    if get_identity(home, identity_id) is None:
-        raise KeyError(f"unknown identity {identity_id!r}")
-    return _init_shared_profile(home, identity_id)
-
-
-def resolve_profile_dir(home, account_label, legacy_dir=None):
-    """Profile dir for an account: the identity's SHARED profile when the
-    account is linked to an identity, else the legacy per-account dir.
-
-    This is what browser/session.py consults — one human browser per
-    identity, many platform tabs."""
-    iid = identity_for_account(home, account_label)
-    if iid:
-        data = _read_json(home, PROFILES_DIR, iid) or {}
-        pdir = data.get("profile_dir") or os.path.join(
-            home, PROFILES_DIR, iid, "profile")
-        os.makedirs(pdir, exist_ok=True)
-        return pdir
-    return legacy_dir
 
 
 # ------------------------------------------------------------ permissions ---
@@ -381,34 +325,27 @@ def get_fingerprint(home, identity_id):
         cx.close()
 
 
-# ------------------------------------------------- platform profile pointers ---
+# ------------------------------------------------- platform identity ---
 
-def _repo_platforms_dir():
-    """The shipped platforms/ tree (templates + pointers)."""
-    return os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "platforms")
-
-
-def write_platform_profile_pointer(home, platform, identity_id):
+def write_platform_identity(home, platform, identity_id):
     """Record which identity a platform workspace operates as.
 
-    Written to the runtime home (``<home>/workspaces/<platform>/``); the
-    shipped ``platforms/<platform>/browser_profile/profile.json`` is the
-    template. Resolution always lands on the identity's ONE shared
-    persistent profile — no per-platform profile data is ever created.
+    Written to the runtime home (``<home>/workspaces/<platform>/``).
+    There is no browser profile behind this — execution happens via
+    execution tickets fulfilled visibly in an external agent's live browser.
     """
-    get_identity(home, identity_id)  # KeyError if unknown: fail closed
+    if get_identity(home, identity_id) is None:
+        raise KeyError(f"unknown identity {identity_id!r}")  # fail closed
     wdir = os.path.join(home, "workspaces", platform)
     os.makedirs(wdir, exist_ok=True)
     data = {
-        "pointer": True,
         "platform": platform,
         "identity_id": identity_id,
-        "profile_dir": shared_profile_dir(home, identity_id),
-        "note": "POINTER ONLY — resolves to the identity's one shared "
-                "persistent browser profile.",
+        "updated_at": utcnow(),
+        "note": "Which identity this workspace operates as. Execution is "
+                "via execution tickets fulfilled in an external agent's live browser.",
     }
-    path = os.path.join(wdir, "browser_profile.json")
+    path = os.path.join(wdir, "identity.json")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
@@ -416,33 +353,15 @@ def write_platform_profile_pointer(home, platform, identity_id):
     return data
 
 
-def read_platform_profile_pointer(home, platform):
-    """Resolve a platform's browser profile to the shared identity profile.
-
-    Returns the absolute profile dir, or None if the platform workspace
-    has no identity assigned yet. Never creates profile data.
-    """
-    runtime = os.path.join(home, "workspaces", platform,
-                           "browser_profile.json")
-    identity_id = ""
-    if os.path.exists(runtime):
-        try:
-            identity_id = json.load(open(runtime)).get("identity_id", "")
-        except (ValueError, OSError):
-            identity_id = ""
-    if not identity_id:
-        # fall back to the shipped template pointer
-        template = os.path.join(_repo_platforms_dir(), platform,
-                                "browser_profile", "profile.json")
-        if os.path.exists(template):
+def read_platform_identity(home, platform):
+    """Which identity a platform workspace operates as (None if unset)."""
+    runtime = os.path.join(home, "workspaces", platform, "identity.json")
+    # back-compat: the old pointer file name
+    legacy = os.path.join(home, "workspaces", platform, "browser_profile.json")
+    for p in (runtime, legacy):
+        if os.path.exists(p):
             try:
-                identity_id = json.load(open(template)).get(
-                    "identity_id", "")
+                return json.load(open(p, encoding="utf-8")).get("identity_id") or None
             except (ValueError, OSError):
-                identity_id = ""
-    if not identity_id:
-        return None
-    try:
-        return shared_profile_dir(home, identity_id)
-    except KeyError:
-        return None
+                continue
+    return None

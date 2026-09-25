@@ -28,9 +28,10 @@ Last checked: 2026-09-25
   subscriptions) that reflects real interest. Every one of these still
   requires the user's explicit per-action approval.
 - Draft video/post metadata for human approval (the tool never publishes by
-  itself). Actual uploads are performed through the persistent browser
-  session in YouTube Studio with the user's logged-in account — no API keys,
-  no OAuth apps; this tool uses no YouTube API services.
+  itself). Actual uploads are fulfilled by the external agent visibly in its own
+  browser via an approved execution ticket, in YouTube Studio with the user's
+  logged-in session — no API keys, no OAuth apps; this tool uses no
+  YouTube API services (see docs/HOST_BROWSER.md).
 - Low-volume, read-only monitoring of the user's own channel activity, with
   the advisory shown on every guarded call. Automated access is restricted
   under YouTube's terms; the tool stays human-directed and low-volume.

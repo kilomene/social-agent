@@ -33,6 +33,21 @@ account label the user themselves configured.
   refused at the content gate.
 - Body — free-form persona notes.
 
+## Identity store layout
+
+`<home>/identity/` holds two things:
+
+- `accounts/<label>.md` — persona files (see above).
+- `host_sessions/` — records of which external agent + live session fulfilled
+  each execution ticket, with the evidence note recorded by
+  `ticket fulfill` (who did what, when, with what evidence).
+
+There is no shared browser profile in the identity store — no
+`browser_profiles/`, no "one shared browser profile for all platforms".
+Execution happens in the external agent's own live browser (see
+`docs/HOST_BROWSER.md`); the identity store only *records* which external
+agent + live session fulfilled each ticket.
+
 ## Enforcement
 
 `post draft` and `engage comment` run **both** checks automatically:

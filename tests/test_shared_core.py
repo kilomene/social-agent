@@ -2,22 +2,30 @@
 duplicates shared core.
 
 Shared core (single instance per install — see core/SHARED_CORE.md):
-  permanent memory, watcher engine, browser engine, backup & recovery,
-  resume engine, scheduler, event bus, video editor, audio engine,
-  caption generator, analytics database, human approval system.
+  permanent memory, watcher engine, hands handoff (execution tickets),
+  backup & recovery, resume engine, scheduler, event bus, video editor,
+  audio engine, caption generator, analytics database, human approval
+  system.
+
+The repo drives no browser itself: there is no browser engine, no
+Playwright, no persistent profiles anywhere. Approved actions become
+execution tickets (hands/) fulfilled visibly by an external agent in its
+own live browser; host sessions are recorded via hands.tickets.
 
 Every platform gets its own source tree::
 
     platforms/<name>/
-      __init__.py        adapter spec (declarative, browser-only)
+      __init__.py        adapter spec (declarative, no-API: execution via
+                         execution tickets in the external agent's browser)
       terms.md / tos_rules.yaml
       watchers/          REGISTRATION manifest only (no watcher classes)
       memory/            namespaced VIEW into the shared DB (no .db copy)
-      browser_profile/   POINTER to the shared identity profile (no data)
       workspace/         shipped workspace template
 
 This test scans every platform subtree and FAILS if any shared-core
-module basename or package directory reappears there.
+module basename or package directory reappears there. It also fails if a
+`browser_profile` directory reappears under platforms/ or if any file
+imports playwright.
 """
 
 import os
@@ -39,8 +47,8 @@ SHARED_CORE_FILES = {
     "backup.py", "recovery.py", "remote.py",
     # 4. scheduler / event bus
     "scheduler.py",
-    # 2. browser engine
-    "driver.py", "session.py", "primitives.py", "human.py", "backend.py",
+    # hands handoff (execution tickets live once in hands/)
+    "tickets.py", "steps.py",
     # watcher engine (lives once in core/watcher_engine/)
     "framework.py", "engine.py",
     # 5. video editor
@@ -59,7 +67,7 @@ SHARED_CORE_FILES = {
 # platforms/<p>/, EXCEPT the sanctioned platforms/<p>/memory/ view dir
 # (asserted separately to hold no database).
 SHARED_CORE_DIRS = {
-    "core", "browser", "editor", "audio", "captions", "approvals",
+    "core", "hands", "editor", "audio", "captions", "approvals",
     "platforms", "ratelimit", "crisis", "identity",
     "watcher_engine", "scheduler", "event_bus", "resume_engine",
 }
@@ -73,7 +81,7 @@ def _platform_subtrees():
         pdir = os.path.join(PLATFORMS, platform)
         if not os.path.isdir(pdir):
             continue
-        for sub in ("workspace", "watchers", "memory", "browser_profile"):
+        for sub in ("workspace", "watchers", "memory"):
             sdir = os.path.join(pdir, sub)
             if os.path.isdir(sdir):
                 yield platform, sub, sdir
@@ -144,16 +152,44 @@ def test_platform_memory_is_a_view_not_a_copy():
                 f"memory.py copy inside {os.path.relpath(path, REPO)}"
 
 
-def test_platform_browser_profile_is_a_pointer_not_data():
-    for platform, sub, sdir in _platform_subtrees():
-        if sub != "browser_profile":
+def test_no_browser_profile_dirs_anywhere():
+    """The persistent-profile world is gone: no browser_profile dir may
+    exist under platforms/ (execution is via hands tickets now)."""
+    hits = []
+    for platform in sorted(os.listdir(PLATFORMS)):
+        pdir = os.path.join(PLATFORMS, platform)
+        if not os.path.isdir(pdir):
             continue
-        names = set(os.listdir(sdir))
-        assert names <= {"profile.json", "README.md"}, \
-            f"unexpected files in {platform}/browser_profile/: {names}"
-        for path in _iter_dirs(sdir):
-            assert os.path.basename(path) != "profile", \
-                f"real profile data inside {os.path.relpath(path, REPO)}"
+        for dp, dn, _fn in os.walk(pdir):
+            dn[:] = [d for d in dn if d != "__pycache__"]
+            if "browser_profile" in dn:
+                hits.append(os.path.relpath(
+                    os.path.join(dp, "browser_profile"), REPO))
+    assert not hits, (
+        "browser_profile dir reappeared under platforms/: "
+        f"{hits} — the repo drives no browser and keeps no profiles"
+    )
+
+
+def test_no_playwright_imports():
+    """No file anywhere in the repo imports playwright (brain-only)."""
+    import re as _re
+    stmt = _re.compile(r"(?m)^\s*(import playwright|from playwright\s+import)")
+    hits = []
+    for dp, dn, fn in os.walk(REPO):
+        dn[:] = [d for d in dn if d not in ("__pycache__", ".git")]
+        for f in fn:
+            if not f.endswith(".py"):
+                continue
+            p = os.path.join(dp, f)
+            try:
+                with open(p, encoding="utf-8", errors="strict") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            if stmt.search(text):
+                hits.append(os.path.relpath(p, REPO))
+    assert not hits, f"playwright imported by: {hits}"
 
 
 def test_platform_watchers_dir_is_a_manifest_not_classes():
@@ -187,13 +223,15 @@ def test_shared_core_manifest_documents_new_layout():
     with open(os.path.join(REPO, "core", "SHARED_CORE.md"),
               encoding="utf-8") as fh:
         text = fh.read()
-    for service in ("Permanent memory", "Watcher engine", "Browser engine",
+    for service in ("Permanent memory", "Watcher engine", "Hands handoff",
                     "Backup & recovery", "Resume engine", "Scheduler",
                     "Event bus", "Video editor", "Audio engine",
                     "Caption generator", "Analytics database",
                     "Human approval system"):
         assert service in text, f"SHARED_CORE.md missing: {service}"
     assert "platforms/<name>/" in text
+    # the old browser-engine world must not be documented anymore
+    assert "Browser engine" not in text
 
 
 def test_platforms_exist_for_shipped_platforms():
@@ -201,9 +239,13 @@ def test_platforms_exist_for_shipped_platforms():
                      "youtube", "reddit", "linkedin"):
         pdir = os.path.join(PLATFORMS, platform)
         assert os.path.isdir(pdir), f"missing platform tree for {platform}"
-        for sub in ("workspace", "watchers", "memory", "browser_profile"):
+        for sub in ("workspace", "watchers", "memory"):
             assert os.path.isdir(os.path.join(pdir, sub)), \
                 f"missing {sub}/ for {platform}"
+        # no persistent-profile leftovers: the brain/hands refactor deleted
+        # every platforms/<name>/browser_profile/ dir
+        assert not os.path.exists(os.path.join(pdir, "browser_profile")), \
+            f"browser_profile/ still present for {platform}"
         for f in ("terms.md", "tos_rules.yaml"):
             assert os.path.isfile(os.path.join(pdir, f)), \
                 f"missing {f} for {platform}"

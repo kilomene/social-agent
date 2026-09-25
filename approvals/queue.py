@@ -106,6 +106,12 @@ def approve(home, item_id, decided_by="user", apply_fn=None):
     apply_fn(item) flips the underlying domain record; it is optional.
     Returns the updated item.
 
+    Approving ISSUES an execution ticket (hands/tickets.py): the human
+    decision is what makes the ticket issuable. The ticket carries the
+    ToS / approval / rate-limit receipts; an external agent fulfills it
+    visibly in its own browser (live browser card). The repo never drives
+    a browser itself. The ticket id is stored on the item as ``ticket_id``.
+
     The apply step is journaled for crash recovery (core/recovery.py):
     the intent is logged BEFORE apply_fn runs and marked completed AFTER,
     so a crash mid-apply can be verified and never blindly repeated.
@@ -133,6 +139,13 @@ def approve(home, item_id, decided_by="user", apply_fn=None):
     item["decided_at"] = utcnow()
     item["decided_by"] = decided_by
     item["approved_at_ts"] = time.time()
+    # issue the execution ticket: the approval decision is what makes the
+    # ticket issuable. The external agent claims it and fulfills it visibly
+    # in its own browser (live browser card the user watches).
+    from hands import tickets as _tickets  # lazy: avoids import cycles
+    ticket = _tickets.issue_from_approval(home, item, decided_by=decided_by,
+                                          decided_at=item["decided_at"])
+    item["ticket_id"] = ticket["id"]
     _save(home, items)
     _rec.end(home, jb["id"], True, result=f"approved by {decided_by}")
     return item

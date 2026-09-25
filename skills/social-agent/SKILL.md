@@ -33,30 +33,40 @@ Requirements: Python 3.8+, nothing else (pure stdlib).
   already-done (no duplicate posts), never auto-executes platform actions.
 - Guardrails §26 (policy/guardrails.md); scale-up notes in core/POSTGRES.md.
 
-## Persistent browser automation (no APIs)
+## Brain/hands execution model + execution tickets (no APIs)
 
-- Engine: Playwright/Chromium (`pip install playwright && playwright install chromium`;
-  see `browser/SETUP.md`). Tests use a simulated driver — never a real browser.
-- `social-agent browser login --account <label> --platform <p>` — headed
-  first login (the human signs in; agent never sees the password).
-  Profiles persist at `<home>/accounts/<label>/browser-profile/`.
-- `social-agent browser act --account <l> --platform <p> --action like
-  --target <url> [--simulate]` — one browser-backed action (like, comment,
-  follow, post_text/video, dm_send, hide_comment...). Every action is
-  ToS-checked first, human-paced, rate-limited, and journaled.
-- 2FA/challenge → pause + user notification, never bypass.
-- Recipes: `platforms/browser/` (selectors rot — re-check discipline).
-  Ops doc: `docs/browser-ops.md`.
+- social-agent is the **brain**; the external agent is the **hands**.
+  The repo never drives a platform itself: no Playwright, no Chromium,
+  no persistent browser profiles, no APIs/API keys.
+- Approving a proposal issues a machine-readable **execution ticket**
+  (`issued → claimed → fulfilled`):
+  `social-agent tickets` lists tickets; `ticket show <id> --json` shows
+  the ticket with step-by-step browser instructions;
+  `ticket claim <id> --agent <name> --session <id>` lets the external
+  agent claim it; `ticket fulfill <id> --evidence <note>` records
+  fulfillment with evidence (idempotent — a ticket can never be
+  fulfilled twice; crashes replay safely via the journal);
+  `ticket fail/cancel` also exist.
+- The external agent fulfills claimed tickets **visibly in its own
+  browser** — the live browser card the user watches. The operator
+  confirms via the existing `engage done` / approval flow. Full
+  instructions: `docs/HOST_BROWSER.md`.
+- Login state lives in the user's own live browser session; all
+  credentials stay in the host's Secure Vault. Sign-in goes through the
+  vault-backed browser flow with the user's approval — the agent never
+  sees or touches passwords, tokens, or 2FA codes.
 - ToS: X browser engagement is `prohibited`/fail-closed by default;
   `tos.acknowledged_risk: [x]` downgrades to restricted ONLY with a loud
-  logged advisory (guardrails §27, `platforms/x/terms.md`).
+  logged advisory (`policy/guardrails.md`, `platforms/x/terms.md`).
 
 ## Safety model (read policy/guardrails.md first)
 
 - Watchers are **read-only**: they poll, detect, and *propose* — never act alone.
 - `post` / `engage` create **dry-run proposals**; each needs an explicit
-  `approve` before anything may be performed, and performance happens in a real
-  browser session, logged with `engage done`.
+  `approve` before anything may be performed. Approving issues an
+  **execution ticket** (`tickets` / `ticket show <id>`); the external agent claims it
+  (`ticket claim`) and fulfills it visibly in its own browser, then records
+  fulfillment with evidence (`ticket fulfill`, idempotent — never fulfilled twice).
 - **One approval queue** (`approvals list/approve/reject`): every proposal —
   engagement, publish, hides, reply drafts — is reviewed in one place with a
   per-type require/auto policy (default: require). Approving executes the
@@ -103,12 +113,14 @@ social-agent watch start --type crisis --platform tiktok --account main \
 social-agent watch run <watcher-id>
 social-agent watch events --limit 10
 
-# 4. Selective engagement: scored like proposal, then approve + log
+# 4. Selective engagement: scored like proposal, then approve
+# (approving mints an execution ticket — the external agent fulfills it live)
 social-agent engage like --platform tiktok --account main --target vid123 \
   --author creator_x --text "sora ai video tutorial" --likes-count 500
 social-agent engage approve <action-id>
-# ... perform the like in a real browser session ...
-social-agent engage done <action-id> --result "liked in browser session"
+# host: social-agent ticket show <ticket-id> -> fulfill in its own live browser ->
+# ticket claim <ticket-id> --agent muse --session <id> ->
+# ticket fulfill <ticket-id> --evidence "liked, https://..."
 
 # 5. Draft and approve posts
 social-agent post draft --platform tiktok --account main --text "Hello world"
@@ -227,5 +239,6 @@ audience questions → video ideas) `crisis` (negative-spike urgent alerts)
 ## What it cannot do
 
 See `platforms/capabilities.md` for the honest per-platform matrix. The CLI
-never posts/likes/comments by itself; live execution is always a real browser
-session with the user's own sign-in. Docs: `docs/heartbeat-integration.md`.
+never posts/likes/comments by itself; live execution is an execution ticket
+fulfilled by the external agent in its own live browser with the user's own
+sign-in (see `docs/HOST_BROWSER.md`).

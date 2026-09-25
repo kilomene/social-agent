@@ -2,5 +2,7 @@
   "tests/test_watchers.py::test_all_seven_types_registered": true,
   "tests/test_new_watchers.py::test_registry_has_14_watchers": true,
   "tests/test_watchers.py::test_all_fourteen_types_registered": true,
-  "tests/test_v10_memory_center.py::test_schema_v2_migrates_cleanly": true
+  "tests/test_v10_memory_center.py::test_schema_v2_migrates_cleanly": true,
+  "tests/test_browser.py": true,
+  "tests/test_execution.py::test_approval_mints_action_plan": true
 }

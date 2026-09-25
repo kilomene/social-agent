@@ -2,10 +2,16 @@
 
 identity/
   accounts/          per-account files (handle, platform, persona, owner)
-  browser_profiles/  accounts -> ONE shared profile dir per identity
+  host_sessions/     registry of host-browser sessions (which host agent +
+                     live session performed each fulfilled execution ticket)
   permissions/       per-identity grants (fail-closed: no grant = no action)
   fingerprints/      human-consistency notes (NOT spoofing tooling)
   identities.db      SQLite registry tying it together
+
+The repo drives no browser: there are no persistent browser profiles.
+`write_platform_identity` records which identity a platform workspace
+operates as; execution happens via execution tickets (hands/) fulfilled
+by the host agent in its own live browser.
 """
 
 import json
@@ -26,27 +32,40 @@ def test_create_and_list_identities(home):
     assert len(ids.list_identities(home)) == 1
 
 
-def test_link_account_shares_one_profile(home):
+def test_platform_identity_round_trip(home):
+    """write_platform_identity / read_platform_identity: which identity a
+    platform workspace operates as. No browser profile behind it."""
+    ids.create_identity(home, "Nova")
+    rec = ids.write_platform_identity(home, "tiktok", "nova")
+    assert rec["platform"] == "tiktok"
+    assert rec["identity_id"] == "nova"
+    assert ids.read_platform_identity(home, "tiktok") == "nova"
+    # unset platform -> None (fail-soft read)
+    assert ids.read_platform_identity(home, "x") is None
+    # overwrite: the workspace now operates as the new identity
+    ids.create_identity(home, "Second")
+    ids.write_platform_identity(home, "tiktok", "second")
+    assert ids.read_platform_identity(home, "tiktok") == "second"
+    # stored as plain JSON under workspaces/<platform>/identity.json
+    data = json.load(open(os.path.join(
+        home, "workspaces", "tiktok", "identity.json")))
+    assert data["identity_id"] == "second"
+    # and it carries no profile dir — there is no browser here
+    assert "profile" not in json.dumps(data).lower()
+
+
+def test_platform_identity_unknown_identity_refused(home):
+    with pytest.raises(KeyError):
+        ids.write_platform_identity(home, "tiktok", "ghost")
+
+
+def test_link_account(home):
     ids.create_identity(home, "Nova")
     ids.link_account(home, "nova", "tt-main", "tiktok", handle="@nova")
     ids.link_account(home, "nova", "x-main", "x", handle="@nova_x")
     ident = ids.get_identity(home, "nova")
     labels = {a["account_label"] for a in ident["accounts"]}
     assert labels == {"tt-main", "x-main"}
-    p1 = ids.shared_profile_dir(home, "nova")
-    # both accounts resolve to the SAME shared profile dir
-    r1 = ids.resolve_profile_dir(home, "tt-main", legacy_dir="/legacy/tt")
-    r2 = ids.resolve_profile_dir(home, "x-main", legacy_dir="/legacy/x")
-    assert r1 == r2 == p1
-    assert os.path.isdir(p1)
-    # registry file maps accounts -> profile
-    reg = json.load(open(os.path.join(
-        home, "identity", "browser_profiles", "nova.json")))
-    assert reg["profile_dir"] == p1
-    assert len(reg["accounts"]) == 2
-    # unlinked accounts fall back to their legacy dir
-    assert ids.resolve_profile_dir(home, "stranger",
-                                   legacy_dir="/legacy/s") == "/legacy/s"
     assert ids.identity_for_account(home, "tt-main") == "nova"
     assert ids.identity_for_account(home, "stranger") is None
 

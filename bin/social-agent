@@ -10,8 +10,11 @@ Safety model (see policy/guardrails.md):
     (default ~/.social-agent) as plain JSON.
 
 Everything works offline: watchers poll fixture files, engagement actions are
-proposed/approved/logged here, and live execution happens in a real browser
-session driven by the user or their agent.
+proposed/approved/logged here. Approving a proposal issues an execution
+ticket (machine-readable JSON: action, platform, account, target,
+parameters, idempotency key, ToS/approval/rate-limit receipts); an
+external agent fulfills it visibly in its own browser (live browser
+card) — the repo never drives a browser itself.
 """
 
 import argparse
@@ -741,9 +744,9 @@ def cmd_post(args):
             backup_mod.recovery_point(
                 home_dir(), note=f"pre-publish recovery point for post {args.id}")
             try:
-                approvals_queue.approve(home_dir(), qitem["id"],
-                                        apply_fn=_apply_approval,
-                                        decided_by=mission or "user")
+                item = approvals_queue.approve(home_dir(), qitem["id"],
+                                               apply_fn=_apply_approval,
+                                               decided_by=mission or "user")
             except (KeyError, ValueError) as e:
                 raise UsageError(str(e))
             # refresh from the store (the queue flip wrote it)
@@ -756,7 +759,9 @@ def cmd_post(args):
             else:
                 print(f"post {args.id} APPROVED for {q['platform']}/{q['account']} "
                       f"(via approval {qitem['id']})")
-            print("DRY-RUN: publish this in a real browser session; the CLI never posts by itself.")
+            print(f"ticket {item.get('ticket_id')}: the external agent claims it"
+                  " (`ticket claim`) and fulfills it visibly in its own browser.")
+            print("DRY-RUN: the external agent fulfills it via the ticket; the CLI never posts by itself.")
         save_json("queue.json", queue)
 
 
@@ -852,7 +857,7 @@ def cmd_engage(args):
         if auto:
             print(f"AUTO-APPROVED {aid} ({auto_via}): "
                   f"{args.op} -> {args.target} [{args.platform}/{acct['username']}]")
-            print("DRY-RUN: perform it in a real browser session, then `engage done`.")
+            print("DRY-RUN: the external agent fulfills it via the ticket, then `ticket fulfill` + `engage done`.")
         else:
             print(f"DRY-RUN proposal {aid}: {args.op} -> {args.target} "
                   f"[{args.platform}/{acct['username']}]")
@@ -887,11 +892,14 @@ def cmd_engage(args):
                 reason="legacy proposal adopted into the unified queue",
                 ref={"store": "actions.json", "id": a["id"]})
         try:
-            approvals_queue.approve(home_dir(), qitem["id"], apply_fn=_apply_approval)
+            item = approvals_queue.approve(home_dir(), qitem["id"],
+                                           apply_fn=_apply_approval)
         except (KeyError, ValueError) as e:
             raise UsageError(str(e))
         print(f"action {args.id} APPROVED: {a['action']} -> {a['target']}")
-        print("Perform it in a real browser session, then log it with `engage done`.")
+        print(f"ticket {item.get('ticket_id')}: the external agent claims it"
+              " (`ticket claim`) and fulfills it visibly in its own browser;")
+        print("then log it with `ticket fulfill` and `engage done`.")
     elif args.op == "done":
         a = next((x for x in actions if x["id"] == args.id), None)
         if not a:
@@ -1136,7 +1144,7 @@ def cmd_profile(args):
         record_action(p["platform"])
         save_json("profiles.json", data)
         print(f"profile change {args.id} APPROVED for {p['account']}")
-        print("Apply it in a real browser session, then log it with `profile done`.")
+        print("Apply it via the ticket in the external agent's live browser, then log it with `profile done`.")
     elif args.op == "done":
         p = next((x for x in data["proposals"] if x["id"] == args.id), None)
         if not p:
@@ -1461,7 +1469,6 @@ def cmd_identity(args):
         ident = identity_store.create_identity(home_dir(), args.name,
                                                owner_name=args.owner or "")
         print(f"identity '{ident['id']}' created (owner: {args.owner or '-'})")
-        print("One shared browser profile for all its platforms is ready.")
     elif args.op == "list":
         idents = identity_store.list_identities(home_dir())
         if not idents:
@@ -1478,10 +1485,8 @@ def cmd_identity(args):
         ident = identity_store.link_account(home_dir(), args.identity,
                                             args.account, args.platform,
                                             handle=args.handle or "")
-        pdir = identity_store.shared_profile_dir(home_dir(), args.identity)
         print(f"linked {args.platform}:{args.account}"
               f" -> identity '{args.identity}'")
-        print(f"shared browser profile: {pdir}")
     elif args.op == "unlink":
         identity_store.unlink_account(home_dir(), args.identity,
                                       args.account)
@@ -1517,13 +1522,34 @@ def cmd_identity(args):
                 print(f"  {k}: {fp[k]}")
         print("  (human-consistency notes only — no spoofing/rotation)")
     elif args.op == "profile":
-        pdir = identity_store.shared_profile_dir(home_dir(), args.identity)
-        data_file = os.path.join(home_dir(), "identity", "browser_profiles",
-                                 args.identity + ".json")
-        print(f"identity '{args.identity}' shared browser profile:")
-        print(f"  dir: {pdir}")
-        print(f"  registry: {data_file}")
-        print("  All platforms for this identity use this ONE profile.")
+        from hands import tickets as _tickets
+        sessions = _tickets.list_host_sessions(home_dir())
+        mine = {sid: s for sid, s in sessions.items()
+                if s.get("identity_id") == args.identity}
+        print(f"identity '{args.identity}' host-browser sessions:")
+        if not mine:
+            print("  none yet — sessions are recorded when the host agent")
+            print("  claims and fulfills tickets (`ticket claim`/`ticket fulfill`).")
+            return
+        for sid, s in sorted(mine.items(),
+                             key=lambda kv: kv[1].get("last_seen", "")):
+            n = len(s.get("tickets_fulfilled", []))
+            print(f"  {sid} agent={s.get('agent', '?')}"
+                  f" last_seen={s.get('last_seen', '?')}"
+                  f" tickets_fulfilled={n}")
+    elif args.op == "host-sessions":
+        from hands import tickets as _tickets
+        sessions = _tickets.list_host_sessions(home_dir())
+        if not sessions:
+            print("no host-browser sessions recorded yet")
+            return
+        for sid, s in sorted(sessions.items(),
+                             key=lambda kv: kv[1].get("last_seen", "")):
+            n = len(s.get("tickets_fulfilled", []))
+            print(f"  {sid} agent={s.get('agent', '?')}"
+                  f" identity={s.get('identity_id') or '-'}"
+                  f" accounts={','.join(s.get('account_labels', [])) or '-'}"
+                  f" tickets_fulfilled={n}")
 
 
 # -------------------------------------------------------------- moderate ---
@@ -1612,12 +1638,15 @@ def cmd_moderate(args):
         try:
             backup_mod.recovery_point(
                 home_dir(), note=f"pre hide-approval recovery point {args.id}")
-            approvals_queue.approve(home_dir(), qitem["id"], apply_fn=_apply_approval,
-                                    decided_by="user")
+            item = approvals_queue.approve(home_dir(), qitem["id"],
+                                             apply_fn=_apply_approval,
+                                             decided_by="user")
         except (KeyError, ValueError) as e:
             raise UsageError(str(e))
         print(f"hide {args.id} APPROVED for {m['platform']}/{m['account']}")
-        print("Hide the comment in a real browser session, then `moderate done`.")
+        print(f"ticket {item.get('ticket_id')}: the external agent claims it"
+              " and hides the comment visibly in its own browser;")
+        print("then `ticket fulfill` and `moderate done`.")
     elif args.op == "done":
         log = _moderation_log()
         m = next((x for x in log if x["id"] == args.id), None)
@@ -1672,7 +1701,9 @@ def cmd_approvals(args):
         if args.op == "reject" and args.reason:
             print(f"reason logged: {args.reason}")
         if item["status"] == "approved":
-            print("Perform it in a real browser session; the CLI never acts by itself.")
+            print(f"ticket {item.get('ticket_id')}: the external agent claims it"
+                  " (`ticket claim`) and fulfills it visibly in its own browser;")
+            print("the CLI never acts by itself.")
 
 
 # ----------------------------------------------------------------- people ---
@@ -2217,11 +2248,9 @@ def cmd_workspace(args):
         ident = getattr(args, "identity", "") or ""
         if ident:
             from identity import store as ident_store
-            ptr = ident_store.write_platform_profile_pointer(
-                home, platform, ident)
-            print(f"browser profile: pointer -> {ptr['profile_dir']}")
-            print("(one shared persistent profile per identity, all platforms)")
-        print("Shared core services (memory, browser engine, backup,")
+            rec = ident_store.write_platform_identity(home, platform, ident)
+            print(f"identity: workspace operates as '{rec['identity_id']}'")
+        print("Shared core services (memory, hands tickets, backup,")
         print("scheduler, watcher engine, resume engine, editor, audio,")
         print("captions, analytics, approvals) are used from their single")
         print("instances — never copied into the workspace.")
@@ -2235,113 +2264,111 @@ def cmd_workspace(args):
                 print(name)
 
 
-# ---------------------------------------------------------------- browser ---
+# ------------------------------------------------------------------ hands ---
 
-def cmd_browser(args):
-    from browser import session as _sess
-    from browser.driver import BROWSER_OK
-    from platforms.browser import backend as _backend
+def cmd_tickets(args):
+    """List execution tickets (default: open — issued/claimed)."""
+    from hands import tickets as _tickets
+    import json as _json
+    status = getattr(args, "status", "") or None
+    pending = getattr(args, "pending", False)
+    rows = _tickets.list_tickets(home_dir(), status=status)
+    if pending:
+        rows = [t for t in rows if t["status"] in ("issued", "claimed")]
+    if not rows:
+        print("no tickets" + (f" [{status}]" if status else ""))
+        return 0
+    if getattr(args, "json", False):
+        print(_json.dumps(rows, indent=2))
+        return 0
+    for t in rows:
+        host = (t.get("host") or {}).get("agent", "")
+        print(f"{t['id']} [{t['status']}] {t['action']}"
+              f" [{t['platform']}/{t['account']}]"
+              + (f" host={host}" if host else ""))
+    return 0
+
+
+def cmd_ticket(args):
+    """Operate on one execution ticket: show|claim|fulfill|cancel|fail."""
+    from hands import tickets as _tickets
+    import json as _json
     home = home_dir()
-    if args.op == "status":
-        print(f"engine: {'playwright' if BROWSER_OK else 'NOT INSTALLED (see browser/SETUP.md)'}")
-        print("backend: browser — the only backend (no APIs, no keys, no switch)")
-        import os as _os
-        adir = _os.path.join(home, "accounts")
-        labels = sorted(_os.listdir(adir)) if _os.path.isdir(adir) else []
-        if not labels:
-            print("no account browser profiles yet — `browser login --account <label> --platform <p>`")
-            return
-        for label in labels:
-            info = _sess.load_session(home, label) or {}
-            prof = _os.path.isdir(_sess.profile_dir(home, label))
-            print(f"{label}: platform={info.get('platform', '?')}"
-                  f" status={info.get('status', '?')} profile={'yes' if prof else 'no'}")
-    elif args.op == "login":
-        if args.platform not in SUPPORTED_PLATFORMS:
-            raise UsageError(f"unknown platform {args.platform!r}")
-        res = _sess.open_login_session(home, args.account, args.platform,
-                                       headed=not args.headless,
-                                       simulate=args.simulate)
-        print(res["instructions"])
-        print("(Close the browser window when you've signed in.)")
-        res["driver"].stop()
-    elif args.op == "open":
-        sess = _sess.open_reuse_session(home, args.account,
-                                        headed=not args.headless,
-                                        simulate=args.simulate)
-        print(f"opened persistent profile for '{args.account}'"
-              f" ({'simulated' if args.simulate else 'real browser'}).")
-        print("Close with Ctrl-C; the profile persists.")
-        try:
-            import time as _t
-            while True:
-                _t.sleep(3600)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            sess["driver"].stop()
-    elif args.op == "act":
-        if args.platform not in SUPPORTED_PLATFORMS:
-            raise UsageError(f"unknown platform {args.platform!r}")
-        params = {}
-        if args.target:
-            params["target_url"] = args.target
-        if args.thread:
-            params["thread_url"] = args.thread
-        if args.text:
-            params["text"] = args.text
-        if args.file:
-            params["video_path"] = args.file
-            params["photo_path"] = args.file
-            params["file"] = args.file
-        if args.title:
-            params["title"] = args.title
-        try:
-            res = _backend.act(home, args.platform, args.account, args.action,
-                               params=params, policy=get_policy(),
-                               simulate=args.simulate,
-                               headed=not args.headless)
-        except Exception as e:
-            raise Refused(str(e))
-        print(f"browser act {args.action} [{args.platform}/{args.account}]:"
-              f" {'OK' if res['ok'] else 'FAILED'}"
-              f" ({len(res['steps'])} steps)")
-        tos = res.get("tos") or {}
-        if tos.get("acknowledged_risk"):
-            print("NOTE: proceeded under tos.acknowledged_risk"
-                  " (see the advisory above and audit/tos_acknowledgments.jsonl)")
+    op = args.op
+    try:
+        if op == "show":
+            ticket = _tickets.get(home, args.ticket_id)
+            if ticket is None:
+                raise KeyError(args.ticket_id)
+            if getattr(args, "json", False):
+                print(_json.dumps(ticket, indent=2))
+            else:
+                print(_tickets.format_ticket(ticket))
+        elif op == "claim":
+            ticket = _tickets.claim(home, args.ticket_id, args.agent,
+                                    args.session, note=args.note or "")
+            print(f"{ticket['id']} claimed by {args.agent}"
+                  f" session={args.session}")
+        elif op == "fulfill":
+            ticket = _tickets.fulfill(home, args.ticket_id, args.evidence,
+                                      host_session_id=args.session or "",
+                                      note=args.note or "")
+            print(f"{ticket['id']} fulfilled — evidence recorded")
+            print("operator: confirm via the existing engage done /"
+                  " approval flow")
+        elif op == "cancel":
+            ticket = _tickets.cancel(home, args.ticket_id,
+                                     reason=args.reason or "")
+            print(f"{ticket['id']} cancelled")
+        elif op == "fail":
+            ticket = _tickets.fail(home, args.ticket_id,
+                                   error=args.error or "")
+            print(f"{ticket['id']} marked failed")
+        return 0
+    except (KeyError, ValueError) as e:
+        print(f"ticket error: {e}", file=sys.stderr)
+        return 2
 
-
-# ----------------------------------------------------------------- listen ---
 
 def cmd_listen(args):
-    if args.op == "once" or args.once:
-        report = listen_mod.run_once(home_dir(), get_policy(),
-                                     watcher_ids=args.watchers.split(",")
-                                     if args.watchers else None)
-    else:
-        interval = args.interval
-        print(f"listening every {interval}s over notification/comment/message "
-              f"watchers (Ctrl-C to stop; poll-based, see docs/listen-latency.md)")
-        try:
-            while True:
-                report = listen_mod.run_once(home_dir(), get_policy())
-                for wid, outs in report.items():
-                    for o in outs:
-                        print(f"[{wid}] {o}")
-                time.sleep(interval)
-        except KeyboardInterrupt:
-            print("listener stopped")
-            return
-    total = 0
-    for wid, outs in report.items():
+    """Fast-poll notification/comment/DM listener (brain side only).
+
+    Runs listen passes over the enabled notification/comment/message
+    watchers; events are routed to reply drafts / hide proposals / people
+    updates — never acted on directly.
+    """
+    watchers = None
+    if getattr(args, "watchers", None):
+        watchers = [w.strip() for w in args.watchers.split(",") if w.strip()]
+    policy = get_policy()
+    once = getattr(args, "once", False) or getattr(args, "op", "once") == "once"
+    if once:
+        report = listen_mod.run_once(home_dir(), policy, watcher_ids=watchers)
+        _print_listen_report(report)
+        print("listen pass complete")
+        return 0
+    print(f"listening every {args.interval}s (Ctrl-C to stop)")
+    try:
+        while True:
+            report = listen_mod.run_once(home_dir(), policy,
+                                         watcher_ids=watchers)
+            _print_listen_report(report)
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        print("listener stopped")
+    return 0
+
+
+def _print_listen_report(report):
+    if not report:
+        print("no listen watchers enabled")
+        return
+    for wid, outs in sorted(report.items()):
+        if not outs:
+            print(f"{wid}: no new events")
         for o in outs:
-            print(f"[{wid}] {o}")
-            total += 1
-    print(f"listen pass complete: {len(report)} watcher(s), {total} outcome(s)")
+            print(f"{wid}: {o}")
 
-
-# --------------------------------------------------------------- caption ---
 
 def cmd_caption(args):
     check_platform(args.platform)
@@ -3220,7 +3247,7 @@ def build_parser():
     p.add_argument("--name", required=True)
     p.add_argument("--owner", default="", help="owner's name")
     i_sub.add_parser("list", help="list identities and their accounts")
-    p = i_sub.add_parser("link", help="link a social account to an identity (shares its browser profile)")
+    p = i_sub.add_parser("link", help="link a social account to an identity")
     p.add_argument("--identity", required=True)
     p.add_argument("--account", required=True, help="account label")
     p.add_argument("--platform", required=True)
@@ -3241,8 +3268,9 @@ def build_parser():
     p.add_argument("--identity", required=True)
     p.add_argument("--set", action="append", default=[],
                    help="k=v (user_agent, viewport, locale, timezone, notes)")
-    p = i_sub.add_parser("profile", help="show the identity's ONE shared browser profile")
+    p = i_sub.add_parser("profile", help="show the identity's host-browser sessions")
     p.add_argument("--identity", required=True)
+    i_sub.add_parser("host-sessions", help="list all recorded host-browser sessions")
     ident.set_defaults(func=cmd_identity)
 
     sc = sub.add_parser("scheduler", help="shared-core scheduler (state in memory DB)")
@@ -3268,8 +3296,8 @@ def build_parser():
     p = ws_sub.add_parser("init", help="create a workspace for any platform")
     p.add_argument("--platform", required=True)
     p.add_argument("--identity", default="",
-                   help="identity id: writes the browser_profile pointer to"
-                        " that identity's ONE shared persistent profile")
+                   help="identity id: records which identity this workspace"
+                        " operates as")
     ws_sub.add_parser("list", help="list workspaces")
     ws.set_defaults(func=cmd_workspace)
 
@@ -3456,9 +3484,9 @@ def build_parser():
     p = ma2_sub.add_parser("summary", help="latest values per metric")
     p.add_argument("--platform", default=None)
     p.add_argument("--account", default=None)
-    ms2 = me_sub.add_parser("sessions", help="browser session registry")
+    ms2 = me_sub.add_parser("sessions", help="host-browser session registry")
     ms2_sub = ms2.add_subparsers(dest="sop", required=True)
-    p = ms2_sub.add_parser("list", help="list registered browser sessions")
+    p = ms2_sub.add_parser("list", help="list registered host-browser sessions")
     p.add_argument("--status", default=None)
     p = ms2_sub.add_parser("health", help="record a session health check")
     p.add_argument("--account", required=True)
@@ -3529,38 +3557,44 @@ def build_parser():
                     help="re-execute safe local work (renders); platform actions "
                          "are never auto-executed")
     rc.add_argument("--full", action="store_true",
-                    help="full resume engine: snapshot -> profiles -> sessions ->"
+                    help="full resume engine: snapshot -> host sessions ->"
                          " journal -> missions -> verify -> continue plan")
     rc.set_defaults(func=cmd_recover)
 
-    br = sub.add_parser("browser", help="persistent browser automation (no APIs)")
-    br_sub = br.add_subparsers(dest="op", required=True)
-    br_sub.add_parser("status", help="engine availability + account profiles")
-    p = br_sub.add_parser("login", help="headed first-time login (you sign in)")
-    p.add_argument("--account", required=True)
-    p.add_argument("--platform", required=True)
-    p.add_argument("--headless", action="store_true")
-    p.add_argument("--simulate", action="store_true",
-                   help="offline simulated browser (tests/dry runs)")
-    p = br_sub.add_parser("open", help="open the persistent profile (watch/debug)")
-    p.add_argument("--account", required=True)
-    p.add_argument("--headless", action="store_true")
-    p.add_argument("--simulate", action="store_true")
-    p = br_sub.add_parser("act", help="run one browser-backed platform action")
-    p.add_argument("--account", required=True)
-    p.add_argument("--platform", required=True)
-    p.add_argument("--action", required=True,
-                   help="like|comment|follow|unfollow|post_text|post_video|"
-                        "dm_send|hide_comment|subscribe|upload_video|post_photo")
-    p.add_argument("--target", default="", help="target URL (post/profile)")
-    p.add_argument("--thread", default="", help="DM thread URL")
-    p.add_argument("--text", default="", help="comment/post/DM text")
-    p.add_argument("--file", default="", help="media file for upload actions")
-    p.add_argument("--title", default="", help="title for upload/post actions")
-    p.add_argument("--headless", action="store_true")
-    p.add_argument("--simulate", action="store_true",
-                   help="offline simulated browser (tests/dry runs)")
-    br.set_defaults(func=cmd_browser)
+    pl = sub.add_parser("tickets", help="list execution tickets (brain -> hands)")
+    pl.add_argument("--status", default="",
+                    help="filter: issued|claimed|fulfilled|failed|cancelled")
+    pl.add_argument("--pending", action="store_true",
+                    help="issued/claimed tickets awaiting the external agent")
+    pl.add_argument("--json", action="store_true",
+                    help="emit machine-readable ticket JSON")
+    pl.set_defaults(func=cmd_tickets)
+
+    pp = sub.add_parser("ticket", help="work one execution ticket: show|claim|fulfill|cancel|fail")
+    pp_sub = pp.add_subparsers(dest="op", required=True)
+    p = pp_sub.add_parser("show", help="show a ticket (machine-readable with --json)")
+    p.add_argument("ticket_id")
+    p.add_argument("--json", action="store_true",
+                   help="emit the raw ticket JSON for the external agent")
+    p = pp_sub.add_parser("claim", help="external agent claims a ticket (issued -> claimed)")
+    p.add_argument("ticket_id")
+    p.add_argument("--agent", required=True, help="external agent name, e.g. muse")
+    p.add_argument("--session", required=True, help="live browser session id")
+    p.add_argument("--note", default="")
+    p = pp_sub.add_parser("fulfill", help="mark a ticket fulfilled with evidence (claimed -> fulfilled)")
+    p.add_argument("ticket_id")
+    p.add_argument("--evidence", required=True,
+                   help="what was done + what was seen in the live browser")
+    p.add_argument("--session", default="",
+                   help="live browser session id (defaults to claim session)")
+    p.add_argument("--note", default="")
+    p = pp_sub.add_parser("cancel", help="cancel an issued ticket")
+    p.add_argument("ticket_id")
+    p.add_argument("--reason", default="")
+    p = pp_sub.add_parser("fail", help="external agent reports the ticket could not be completed")
+    p.add_argument("ticket_id")
+    p.add_argument("--error", default="")
+    pp.set_defaults(func=cmd_ticket)
 
     cap = sub.add_parser("caption", help="platform-optimized caption generator")
     cap_sub = cap.add_subparsers(dest="op", required=True)

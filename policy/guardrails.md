@@ -39,24 +39,32 @@ only acting pauses.
 
 ## 5. Credentials
 
-- social-agent **never stores passwords, tokens, or session cookies** in the
-  repository or in its state directory.
+- social-agent **never stores, logs, or handles passwords, tokens, or
+  session cookies** — not in the repository, not in its state directory,
+  not in the memory DB, not in execution tickets, not in identity files. All
+  social-platform logins/credentials live ONLY in the host's Secure
+  Vault (secure credential store). This strengthens, not replaces, the
+  standing rule: the agent itself never sees or touches passwords,
+  tokens, or 2FA codes.
 - `accounts add` stores only the platform, username/handle, and a label —
   never secrets.
-- Real sign-in happens in the user's own browser session, outside this tool.
+- Sign-in happens in the user's own live browser session, outside this
+  tool, through the vault-backed browser flow with the user's approval.
   The CLI's `doctor` command verifies the environment; it never asks for a
   password. There is no OAuth flow in this tool and no API backend —
-  the browser is the only way in.
+  the external agent's live browser is the only way in, and the live browser
+  is not an API.
 
 ## 6. Honest automation
 
 - The CLI works **offline by default**: watchers poll fixture data or
   adapter-provided items; engagement actions are proposed, approved, and
-  *logged* — live execution happens through a real browser session driven by
-  the user or their agent, where platform UI and consent flows are visible.
+  *logged* — live execution happens through an execution ticket fulfilled by
+  the external agent in its own live browser, where platform UI and consent
+  flows are visible to the user (`docs/HOST_BROWSER.md`).
 - `capabilities.md` in `platforms/` documents what each platform genuinely
-  supports via browser automation and what it does not. If something is not
-  possible, it is listed as not possible — never faked.
+  supports via the external agent's live browser and what it does not. If something is
+  not possible, it is listed as not possible — never faked.
 
 ## 7. Auditability
 
@@ -97,7 +105,8 @@ only acting pauses.
 ## 10. Profile changes always need explicit approval — no exceptions
 
 - `profile update` creates a proposal; `profile approve` is the explicit
-  approval; `profile done` logs the browser-applied change.
+  approval; `profile done` logs the change (via the execution ticket fulfilled
+  by the external agent in its live browser).
 - **There is no code path that auto-approves profile changes** — not in
   supervised mode, not in autonomous mode, not with any mission. The
   `profile approve` command deliberately never consults the autonomy state.
@@ -126,7 +135,8 @@ only acting pauses.
 - A `restricted` action proceeds but prints the platform's constraint as an
   advisory, so the operator always sees the rule being operated under.
 - Honest gaps are stated in the docs, not hidden: e.g. X's terms prohibit
-  non-API automation outright, and this tool is browser-driven, so several X
+  non-API automation outright, and live execution here happens in the
+  external agent's own browser by the owner's explicit order, so several X
   automation categories are refused rather than faked.
 - These are plain-language summaries, not legal advice. The official documents
   govern, and they change over time — re-check them periodically.
@@ -201,7 +211,7 @@ only acting pauses.
 - Scope is hard: the agent moderates **only the user's own comment
   sections** — creators moderating their own posts. It never touches anyone
   else's content. ToS layer classifies this as `comment_moderation`
-  (allowed on all 6 platforms for own-content moderation).
+  (allowed on all platforms for own-content moderation).
 - The comment watcher with `moderate: true` auto-classifies new comments:
   toxic/spam become high-severity events (crisis can escalate), and
   auto-hide-rule matches attach hide *proposals*.
@@ -427,27 +437,30 @@ one isolated brain via `./install.sh` → `~/SocialAgent/`).
   health, snapshot count, and stale runner locks (informational — never
   fails the run).
 
-## 27. Persistent browser automation (no APIs) + ToS acknowledged risk
+## 27. Host-browser execution (no APIs) + ToS acknowledged risk
 
-All six platforms (Facebook, Instagram, X, YouTube, Reddit, TikTok) are
-driven through a **persistent real browser** (Playwright/Chromium) — no
-APIs, no API keys. Per-account profiles live at
-`<home>/accounts/<label>/browser-profile/`; logins/cookies survive
-restarts like a person's own browser. `browser login <account>` opens a
-**headed** session for first-time manual sign-in (the human signs in; the
-agent never sees the password). 2FA/challenge → the agent **pauses,
-notifies the user, and waits** — it never attempts a bypass.
+**social-agent is the brain; the external agent is the hands.** The repo
+proposes, gates, and logs — it does not drive any platform itself. No
+APIs, no API keys, and no bundled browser automation: no Playwright,
+no Chromium install, no persistent browser profiles owned by the repo.
+When the user approves a proposal, the approval mints a structured
+**execution ticket** (`issued → claimed → fulfilled`),
+and the external agent fulfills it live in its own Chromium — the browser
+card the user watches (`docs/HOST_BROWSER.md`).
 
-Every browser action is human-paced (randomized delays,
-scroll-before-click, configured active hours) and routed through the
-**central rate-limit controller** — the browser is a backend, not a
-bypass. Every primitive is journaled with an idempotency key, so a
-crashed browser session resumes instead of repeating a post. Per-platform
-recipes live in `platforms/browser/` (selectors, login notes, quirks);
-**selectors rot** — they are a maintenance surface with a re-check
-discipline (`LAST_VERIFIED` per recipe). There is no backend switch: the
-browser is the only backend — no APIs, no API keys, no config option to
-change that.
+The host browser is the user's own live logged-in session. The agent
+**never** sees or handles passwords, tokens, or 2FA codes: all
+logins/credentials live only in the host's Secure Vault, and sign-in in
+the host browser goes through the vault-backed browser flow with the
+user's approval. A 2FA/challenge screen means pause, notify, wait — it
+is never bypassed.
+
+Every executed plan is idempotent: the event journal carries an
+idempotency key per plan, so a crashed session resumes instead of
+repeating a post. A failed step is recorded as evidence and never
+retried blindly. `policy.yaml` → `host_execution:` holds the
+host-facing notes (e.g. active hours the host should respect); it is
+not a repo-driven browser config.
 
 **ToS acknowledged risk — handled honestly.** The ToS layer still fails
 closed by default: e.g. X browser-driven likes/comments/follows/DMs are
@@ -467,4 +480,4 @@ the prohibition stands; the agent never silently violates terms. The
 risk is the **user's informed choice**, and the agent records it. This
 sits at the very top of the guard order: **ToS (incl. acknowledged-risk)
 > crisis > approvals > rate limits > quiet hours** — nothing below can
-grant what ToS refuses. Docs: `docs/browser-ops.md`, `browser/SETUP.md`.
+grant what ToS refuses. Docs: `docs/HOST_BROWSER.md`, `platforms/x/terms.md`.

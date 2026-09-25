@@ -1,6 +1,0 @@
-{
-  "pointer": true,
-  "platform": "x",
-  "identity_id": "",
-  "note": "POINTER ONLY - no profile data lives here. Resolves to the identity's ONE shared persistent browser profile (identity/browser_profiles/<identity>/profile), so the same browser profile is used no matter the platform. Fill identity_id via: social-agent workspace init --platform x --identity <id>"
-}

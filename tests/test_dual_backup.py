@@ -21,9 +21,18 @@ def _seed_state(home):
     mem.convo_log(home, "user", "remember this")
     mem.mission_create(home, "m1")
     os.makedirs(os.path.join(home, "accounts", "main"), exist_ok=True)
-    with open(os.path.join(home, "accounts", "main", "browser.json"),
+    with open(os.path.join(home, "accounts", "main", "notes.json"),
               "w") as fh:
         json.dump({"label": "main", "status": "active"}, fh)
+    # host-browser session records are in the protected set
+    # (identity/host_sessions/ — the brain/hands refactor's replacement for
+    # the old per-account browser.json session files)
+    sess_dir = os.path.join(home, "identity", "host_sessions")
+    os.makedirs(sess_dir, exist_ok=True)
+    with open(os.path.join(sess_dir, "host_sessions.json"), "w") as fh:
+        json.dump({"sess-1": {"agent": "muse", "session_id": "sess-1",
+                              "account_labels": ["main"],
+                              "tickets_fulfilled": []}}, fh)
 
 
 def test_versioned_snapshot_layout_and_latest(home):
@@ -38,6 +47,9 @@ def test_versioned_snapshot_layout_and_latest(home):
     # latest pointer resolves
     assert bmod.resolve_latest(home) == name
     assert bmod.list_versioned(home)[0]["id"] == name
+    # host-browser session records are in the protected set
+    paths = [f["path"] for f in m["files"]]
+    assert any(p.startswith("identity/host_sessions/") for p in paths), paths
     # snapshots are immutable: a second snapshot never rewrites the first
     before = open(os.path.join(dest, "manifest.json")).read()
     mem.convo_log(home, "user", "another turn")
@@ -146,10 +158,10 @@ def test_remote_folder_sync_roundtrip(home, tmp_path):
     assert result["provider"] == "folder"
     copied = [f for f in os.listdir(dest) if f.endswith(".sar.enc")]
     assert len(copied) == 1
-    # the bundle is ENCRYPTED — no plaintext cookies/credentials inside
+    # the bundle is ENCRYPTED — no plaintext session records or memory inside
     with open(os.path.join(dest, copied[0]), "rb") as fh:
         blob = fh.read()
-    assert b"browser.json" not in blob
+    assert b"sess-1" not in blob
     assert b"remember this" not in blob
     # key stays local, never in the remote dir
     assert not any("remote_key" in f for f in os.listdir(dest))

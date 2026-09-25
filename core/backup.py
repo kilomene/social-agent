@@ -156,10 +156,10 @@ PROTECTED_PATHS = (
     "memory.db",                  # permanent memory (SQLite brain)
     "identity/identities.db",     # identity registry
     "identity/accounts/",         # per-account identity files
-    "identity/browser_profiles/", # account -> shared profile mapping
+    "identity/host_sessions/",   # host-browser session records
     "identity/permissions/",      # per-identity grants
     "identity/fingerprints/",     # per-identity fingerprint notes
-    "accounts/",                  # browser profiles + session sidecars
+    "accounts/",                  # per-account files (personas, notes)
     "audit/journal.jsonl",        # event journal (source of truth)
     "missions/",                  # mission state files
     "policy/policy.yaml",         # behavior config
