@@ -206,17 +206,31 @@ def test_every_platform_registers_its_watchers():
     import sys
     sys.path.insert(0, REPO)
     from core.watcher_engine import REGISTRY
+    # DMs are owned EXCLUSIVELY by dm_agents/ (2026-09-25): the DM
+    # platforms must NOT register the 'message' watcher, so a watcher and
+    # a DM agent can never double-handle the same conversation.
+    DM_PLATFORMS = {"tiktok", "x", "instagram", "facebook"}
     for platform in ("tiktok", "x", "instagram", "facebook", "youtube",
                      "reddit", "linkedin"):
         pkg = __import__(f"platforms.{platform}.watchers",
                          fromlist=["WATCHERS"])
         declared = {s[0] if isinstance(s, (tuple, list)) else s
                     for s in pkg.WATCHERS}
-        expected = set(REGISTRY) - (set() if platform == "youtube"
-                                    else {"channel"})
+        excluded = set() if platform == "youtube" else {"channel"}
+        if platform in DM_PLATFORMS:
+            excluded |= {"message"}
+        expected = set(REGISTRY) - excluded
         assert declared == expected, \
             f"{platform}: manifest declares {sorted(declared)}, " \
             f"expected {sorted(expected)}"
+    # And the retirement is real: no DM platform declares 'message'.
+    for platform in DM_PLATFORMS:
+        pkg = __import__(f"platforms.{platform}.watchers",
+                         fromlist=["WATCHERS"])
+        declared = {s[0] if isinstance(s, (tuple, list)) else s
+                    for s in pkg.WATCHERS}
+        assert "message" not in declared, \
+            f"{platform} still registers the retired message watcher"
 
 
 def test_shared_core_manifest_documents_new_layout():

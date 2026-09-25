@@ -45,7 +45,8 @@ from core.watcher_engine import WatcherEngine
 from platforms.tiktok import watchers as tw
 
 engine = WatcherEngine(home)            # shared engine, single instance
-tw.register(engine, account="main")     # 14 watchers: tiktok:notification, ...
+tw.register(engine, account="main")     # 13 watchers: tiktok:notification, ...
+                                        # (message retired 2026-09-25: dm_agents owns DMs)
 ```
 
 Registering the same platform twice is refused

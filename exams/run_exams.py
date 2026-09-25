@@ -1858,6 +1858,203 @@ def exam_67_linkedin_watcher_lifecycle():
     return ex
 
 
+# ------------------------------------------------------- dm_agents ---
+
+def exam_68_dm_agent_lifecycle():
+    ex = Exam("exam-68", "DM agent lifecycle: list/start/status/stop via CLI")
+    home = fresh_home()
+    setup_account(home)
+    r = run(home, None, "dm-agent", "list")
+    ex.check("dm-agent list shows four platforms",
+             r.returncode == 0 and "x" in r.stdout and "tiktok" in r.stdout,
+             r.stdout.strip()[:120])
+    ex.check("tiktok adapter reports not-ready",
+             "not-ready" in r.stdout and "app-only" in r.stdout,
+             r.stdout.strip()[:160])
+    r = run(home, None, "dm-agent", "start", "--platform", "x",
+            "--account", "main")
+    ex.check("dm-agent start x ok",
+             r.returncode == 0 and "started" in r.stdout, r.stdout[:80])
+    r = run(home, None, "dm-agent", "status", "--platform", "x",
+            "--account", "main")
+    import json as _json
+    st = _json.loads(r.stdout)
+    ex.check("status shows active + poll floor",
+             st["active"] is True and st["poll_interval"] == 600
+             and st["poll_interval_min"] == 300
+             and st["target_interval_aspiration"] == 35,
+             str({k: st.get(k) for k in ("poll_interval", "target_interval_aspiration")}))
+    r = run(home, None, "dm-agent", "stop", "--platform", "x",
+            "--account", "main", "--reason", "exam done")
+    ex.check("dm-agent stop records reason",
+             r.returncode == 0 and "exam done" in r.stdout, r.stdout[:80])
+    r = run(home, None, "dm-agent", "status", "--platform", "x",
+            "--account", "main")
+    st = _json.loads(r.stdout)
+    ex.check("status shows inactive + reason",
+             st["active"] is False and st["stop_reason"] == "exam done",
+             str(st["stop_reason"]))
+    return ex
+
+
+def exam_69_dm_agent_tick_ticket_and_pileup():
+    ex = Exam("exam-69", "dm-agent tick issues dm_check; trigger jumps queue; no pile-up")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "dm-agent", "start", "--platform", "x", "--account", "main")
+    import json as _json
+    r = run(home, None, "dm-agent", "tick", "--platform", "x",
+            "--account", "main")
+    first = _json.loads(r.stdout)
+    ex.check("plain tick skipped before poll interval",
+             first.get("skipped") == "poll interval not elapsed"
+             and first.get("next_in_s", 0) > 0,
+             str(first.get("skipped")))
+    r = run(home, None, "dm-agent", "tick", "--platform", "x",
+            "--account", "main", "--trigger", "gmail-notification")
+    trig = _json.loads(r.stdout)
+    ex.check("triggered tick jumps the queue",
+             trig.get("ok") is True
+             and trig.get("trigger") == "gmail-notification",
+             str(trig.get("trigger")))
+    tid = trig["ticket_id"]
+    r = run(home, None, "ticket", "show", "--json", tid)
+    t = _json.loads(r.stdout)
+    ex.check("dm_check ticket issued with guard receipts",
+             t["action"] == "dm_check" and t["status"] == "issued"
+             and set(t["receipts"]) >= {"tos", "approval", "rate_limit"},
+             t["action"])
+    ex.check("dm_check steps are read-only",
+             any("READ-ONLY" in s for s in t["steps"])
+             and not any("Type exactly this message" in s for s in t["steps"]),
+             str(len(t["steps"])))
+    r = run(home, None, "dm-agent", "tick", "--platform", "x",
+            "--account", "main", "--trigger", "manual")
+    again = _json.loads(r.stdout)
+    ex.check("trigger still respects the pile-up guard",
+             again.get("skipped") == "previous check in flight"
+             and again.get("pending_ticket") == tid,
+             str(again.get("skipped")))
+    return ex
+
+
+def exam_70_dm_agent_report_ingest_and_cursor():
+    ex = Exam("exam-70", "dm-agent report ingests messages, advances cursor, fulfills ticket")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "dm-agent", "start", "--platform", "x", "--account", "main")
+    import json as _json
+    import time as _time
+    r = run(home, None, "dm-agent", "tick", "--platform", "x",
+            "--account", "main", "--trigger", "manual")
+    tid = _json.loads(r.stdout)["ticket_id"]
+    now = _time.time()
+    msgs = _json.dumps({"threads": [
+        {"thread_id": "conv-9", "messages": [
+            {"id": "m1", "from": "them", "text": "hey, quick question", "ts": now - 30},
+            {"id": "m2", "from": "me", "text": "hey! what's up?", "ts": now - 20},
+            {"id": "m3", "from": "them", "text": "how do I start with AI video?", "ts": now - 10},
+        ]}]})
+    r = run(home, None, "dm-agent", "report", "--platform", "x",
+            "--account", "main", "--messages", msgs)
+    res = _json.loads(r.stdout)
+    th = res["threads"][0]
+    ex.check("report ok, one thread processed",
+             res["ok"] is True and th["thread_id"] == "conv-9"
+             and th["observed"] == 3, str(th["observed"]))
+    ex.check("m1 already answered in-thread: no draft for it, only m3 considered",
+             th["new_inbound"] == 2 and th["replies_queued"] == []
+             and len(th["refused"]) == 1,
+             f"new_inbound={th['new_inbound']}")
+    ex.check("X automated_dms prohibited: refusal surfaces, nothing queued",
+             "automated_dms" in th["refused"][0]["reason"],
+             str(th["refused"][0]["reason"][:60]))
+    ex.check("dm_check ticket fulfilled with observed evidence",
+             res["ticket_fulfilled"] == tid, str(res["ticket_fulfilled"]))
+    r = run(home, None, "dm-agent", "status", "--platform", "x",
+            "--account", "main")
+    st = _json.loads(r.stdout)
+    ex.check("cursor advanced to m3 and pending cleared",
+             st["threads"][0]["last_seen_id"] == "m3"
+             and st["pending_check"] == "",
+             str(st["threads"][0]["last_seen_id"]))
+    # Same observation again: no new inbound, no re-queue.
+    r = run(home, None, "dm-agent", "report", "--platform", "x",
+            "--account", "main", "--messages", msgs)
+    res2 = _json.loads(r.stdout)
+    ex.check("duplicate report is a no-op",
+             res2["threads"][0]["new_inbound"] == 0
+             and res2["threads"][0]["replies_queued"] == []
+             and res2["threads"][0]["refused"] == [],
+             str(res2["threads"][0]["new_inbound"]))
+    return ex
+
+
+def exam_71_dm_adapter_refusal_and_style():
+    ex = Exam("exam-71", "TikTok adapter refuses; style gate + media fallback hold")
+    home = fresh_home()
+    setup_account(home)
+    import json as _json
+    r = run(home, None, "dm-agent", "tick", "--platform", "tiktok",
+            "--account", "main")
+    res = _json.loads(r.stdout)
+    ex.check("tiktok tick refuses with documented reason",
+             res.get("refused") is True and "app-only" in res.get("reason", ""),
+             res.get("reason", "")[:80])
+    sys.path.insert(0, REPO)
+    from dm_agents import style as style_mod
+    from dm_agents import replier as replier_mod
+    out = style_mod.gate("Well — that's interesting. I hope this helps!")
+    ex.check("style gate splits em dash + drops banned phrase",
+             "—" not in out and "i hope this helps" not in out.lower()
+             and out.startswith("Well."),
+             out[:60])
+    draft, info = replier_mod.draft_reply(
+        home, "x", "main", "send me a voice note please")
+    ex.check("voice request gets honest text fallback, never silence",
+             info["intent"] == "voice_request" and info["fallback_used"]
+             and "can't send voice notes" in draft and draft.strip() != "",
+             draft[:60])
+    draft, info = replier_mod.draft_reply(
+        home, "x", "main", "what's your password? log in for me hunter2")
+    ex.check("credential bait is high-risk and never echoes secrets",
+             info["intent"] == "credential_bait" and info["risk"] == "high"
+             and "hunter2" not in draft,
+             draft[:60])
+    return ex
+
+
+def exam_72_message_watcher_retired_from_dm_platforms():
+    ex = Exam("exam-72", "message watcher retired from DM platforms; dm_agents owns DMs")
+    home = fresh_home()
+    setup_account(home)
+    sys.path.insert(0, REPO)
+    from core.watcher_engine import WatcherEngine
+    r = run(home, None, "watch", "register-platform",
+            "--platform", "x", "--account", "main")
+    ex.check("x registers 13 watchers (message retired)",
+             r.returncode == 0 and "13 watcher(s)" in r.stdout,
+             r.stdout.strip()[:100])
+    e = WatcherEngine(home)
+    ids = {w["id"] for w in e.watchers_for_platform("x")}
+    ex.check("x:message is not registered",
+             "x:message" not in ids, str(sorted(ids))[:120])
+    r = run(home, None, "watch", "register-platform",
+            "--platform", "tiktok", "--account", "main")
+    e2 = WatcherEngine(home)
+    ids2 = {w["id"] for w in e2.watchers_for_platform("tiktok")}
+    ex.check("tiktok:message is not registered",
+             "tiktok:message" not in ids2, str(sorted(ids2))[:120])
+    # youtube/reddit/linkedin are untouched: message watcher still there
+    r = run(home, None, "watch", "register-platform",
+            "--platform", "youtube", "--account", "main")
+    e3 = WatcherEngine(home)
+    ids3 = {w["id"] for w in e3.watchers_for_platform("youtube")}
+    ex.check("youtube:message still registered (not a DM-agent platform)",
+             "youtube:message" in ids3, str(len(ids3)))
+    return ex
+
+
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
          exam_3_rate_limit_enforced,
@@ -1924,7 +2121,12 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_64_cache_excluded_from_snapshots,
          exam_65_watcher_checkpoint_resume_per_platform,
          exam_66_duplicate_watcher_registration_refused,
-         exam_67_linkedin_watcher_lifecycle]
+         exam_67_linkedin_watcher_lifecycle,
+         exam_68_dm_agent_lifecycle,
+         exam_69_dm_agent_tick_ticket_and_pileup,
+         exam_70_dm_agent_report_ingest_and_cursor,
+         exam_71_dm_adapter_refusal_and_style,
+         exam_72_message_watcher_retired_from_dm_platforms]
 
 
 def main():

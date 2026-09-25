@@ -1,4 +1,12 @@
-"""Message watcher: new DMs / inbox messages."""
+"""Message watcher: new DMs / inbox messages.
+
+RETIRED for x / tiktok / instagram / facebook (2026-09-25): DMs are owned
+EXCLUSIVELY by dm_agents/ now, so the watcher and the DM agent can never
+double-handle the same conversation. The class is retained because
+youtube / reddit / linkedin still register it, listen.py's people-memory
+pass reads message events (it only logs senders, never drafts replies),
+and the test suite + exams exercise it directly.
+"""
 
 from ..framework import Watcher
 

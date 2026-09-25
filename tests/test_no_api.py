@@ -44,7 +44,8 @@ OAUTH_PAT = re.compile(r"\boauth\b", re.I)
 # source areas that must never mention API credentials or OAuth flows
 # ("browser" was removed by the brain/hands refactor — the repo drives no
 # browser itself; "hands" is the execution-ticket handoff to the host agent)
-CODE_DIRS = ["platforms", "hands", "core", "policy", "bin", "catalogs"]
+CODE_DIRS = ["platforms", "hands", "core", "policy", "bin", "catalogs",
+             "dm_agents"]
 
 # files allowed to name secrets (leak detector) or prohibit them
 ALLOWLIST = {

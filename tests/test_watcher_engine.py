@@ -42,10 +42,12 @@ def test_register_platform_manifest(home):
     e = _engine(home)
     import platforms.tiktok.watchers as tw
     recs = tw.register(e, account="main")
-    assert len(recs) == len(REGISTRY) - 1  # all but channel
+    # all but channel (youtube-only) and message (retired: dm_agents owns DMs)
+    assert len(recs) == len(REGISTRY) - 2
     assert {r["platform"] for r in recs} == {"tiktok"}
     ids = {r["id"] for r in recs}
     assert "tiktok:notification" in ids
+    assert "tiktok:message" not in ids
     # registering the same platform again is refused per-watcher
     with pytest.raises(DuplicateWatcherError):
         tw.register(e, account="main")
@@ -154,8 +156,10 @@ def test_engine_lists_by_platform(home):
     import platforms.x.watchers as xw
     tw.register(e, account="a")
     xw.register(e, account="b")
-    assert len(e.watchers_for_platform("tiktok")) == len(REGISTRY) - 1
-    assert len(e.list(enabled_only=True)) == 2 * (len(REGISTRY) - 1)
+    # tiktok/x register all but channel (youtube-only) and message
+    # (retired: dm_agents owns DMs)
+    assert len(e.watchers_for_platform("tiktok")) == len(REGISTRY) - 2
+    assert len(e.list(enabled_only=True)) == 2 * (len(REGISTRY) - 2)
     res = e.poll_all()
     assert set(res) == {"tiktok", "x"}
     assert "tiktok:notification" in res["tiktok"]

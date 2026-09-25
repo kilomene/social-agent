@@ -10,13 +10,16 @@ import sys
 
 PLATFORM = "facebook"
 
+# NOTE (2026-09-25): the 'message' watcher was retired from this
+# platform. DMs are owned EXCLUSIVELY by dm_agents/ now, so the
+# watcher and the DM agent can never double-handle a conversation.
+# Existing installs: run `social-agent watch stop <platform>:message`.
 WATCHERS = [
     ('notification', {}),
     ('comment', {'post_id': 'latest'}),
     ('feed', {}),
     ('follow', {'targets': []}),
     ('activity', {}),
-    ('message', {}),
     ('trend', {}),
     ('competitor', {'competitors': []}),
     ('sentiment', {}),
@@ -35,7 +38,6 @@ FIXTURE_FILES = {
     'follow': 'follow_targets.json',
     'activity': 'activity.json',
     'channel': 'channel.json',
-    'message': 'messages.json',
     'trend': 'trend.json',
     'competitor': 'competitor.json',
     'sentiment': 'sentiment.json',

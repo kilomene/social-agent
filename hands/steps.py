@@ -98,6 +98,21 @@ _T = {
         "Send it and confirm it appears in the thread as sent.",
         EVIDENCE_STEP,
     ],
+    "dm_check": [
+        "READ-ONLY check: open the account's DM inbox in your live Chromium.",
+        LOGIN_WALL_STEP,
+        ("If the platform asks for an encrypted-messages passcode, STOP and "
+         "report it. Never type or ask for the passcode in this flow."),
+        "For each thread listed in the ticket parameters, open it and read "
+        "the most recent messages (about the last 20 per thread).",
+        ("Do NOT reply to anything, do NOT open links, do NOT change any "
+         "setting. Reading only."),
+        ("Return the observed messages as JSON on fulfill: "
+         "'{{\"threads\": [{{\"thread_id\": \"...\", \"messages\": "
+         "[{{\"id\": \"...\", \"from\": \"them\"|\"me\", \"text\": \"...\", "
+         "\"ts\": <unix timestamp>}}]}}]}}.'"),
+        EVIDENCE_STEP,
+    ],
     "hide_comment": [
         "In your live Chromium, open the post containing the comment: {target_url}",
         LOGIN_WALL_STEP,

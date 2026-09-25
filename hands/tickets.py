@@ -56,8 +56,8 @@ TICKET_SCHEMA = {
     "issued_at": "ISO-8601 UTC timestamp",
     "status": "one of: " + ", ".join(STATUSES),
     "action": "like | comment | follow | unfollow | post_text | "
-              "post_video | post_photo | dm_send | hide_comment | reshare | "
-              "subscribe | profile_update",
+              "post_video | post_photo | dm_send | dm_check | hide_comment | "
+              "reshare | subscribe | profile_update",
     "platform": "tiktok | x | instagram | facebook | youtube | reddit | linkedin",
     "account": "account label the action is for",
     "target": "target URL (post/profile/conversation)",

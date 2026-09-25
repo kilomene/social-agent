@@ -2352,6 +2352,64 @@ def cmd_ticket(args):
         return 2
 
 
+def cmd_dm_agent(args):
+    """Per-platform DM conversation agents: list|start|stop|status|tick|report.
+
+    The DM agent owns a platform account's DM threads exclusively. `tick`
+    issues a read-only dm_check ticket (or prints machine-readable hands
+    instructions); `report` ingests the observed messages JSON the host
+    hands back, drafts style-gated replies, and queues them for approval.
+    Replies are never sent by this command — only through the approvals
+    queue and the standard ticket pipeline.
+    """
+    from dm_agents import get_adapter, SUPPORTED
+    from dm_agents.agent import DMAgent
+    home = home_dir()
+    op = args.op
+    if op == "list":
+        for plat in SUPPORTED:
+            try:
+                ready, reason = get_adapter(plat).readiness()
+            except KeyError:
+                ready, reason = False, "no adapter"
+            state = "ready" if ready else "not-ready"
+            print(f"{plat:10s} {state:9s} {reason[:100]}")
+        return
+    platform = args.platform
+    if platform not in SUPPORTED:
+        raise UsageError(
+            f"unknown DM platform {platform!r} (see `dm-agent list`)")
+    check_platform(platform)
+    account = args.account or "main"
+    agent = DMAgent(home, platform, account, policy=get_policy())
+    if op == "start":
+        res = agent.start()
+        print(f"dm-agent started: {platform}/{account}")
+        print(json.dumps(res, indent=2))
+    elif op == "stop":
+        res = agent.stop(reason=args.reason or "")
+        print(f"dm-agent stopped: {platform}/{account}"
+              f" ({res['stop_reason']})")
+    elif op == "status":
+        print(json.dumps(agent.status(), indent=2))
+    elif op == "tick":
+        res = agent.tick(trigger=args.trigger or None)
+        print(json.dumps(res, indent=2))
+        if res.get("refused"):
+            print(f"REFUSED: {res.get('reason')}", file=sys.stderr)
+        elif res.get("skipped"):
+            print(f"skipped: {res.get('skipped')}", file=sys.stderr)
+    elif op == "report":
+        try:
+            messages = json.loads(args.messages)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise UsageError(f"bad --messages JSON: {e}")
+        res = agent.report(messages)
+        print(json.dumps(res, indent=2))
+        if res.get("refused"):
+            print(f"REFUSED: {res.get('reason')}", file=sys.stderr)
+
+
 def cmd_listen(args):
     """Fast-poll notification/comment/DM listener (brain side only).
 
@@ -3617,6 +3675,33 @@ def build_parser():
     p.add_argument("ticket_id")
     p.add_argument("--error", default="")
     pp.set_defaults(func=cmd_ticket)
+
+    dm = sub.add_parser("dm-agent",
+                        help="per-platform DM conversation agents (own DMs exclusively)")
+    dm_sub = dm.add_subparsers(dest="op", required=True)
+    dm_sub.add_parser("list", help="list DM agent platforms + adapter readiness")
+    p = dm_sub.add_parser("start", help="start the DM agent for a platform account")
+    p.add_argument("--platform", required=True, help="x|tiktok|instagram|facebook")
+    p.add_argument("--account", default="main", help="account label")
+    p = dm_sub.add_parser("stop", help="stop the DM agent (with reason)")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", default="main")
+    p.add_argument("--reason", default="", help="why it was stopped")
+    p = dm_sub.add_parser("status", help="agent status: active, threads, cursors")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", default="main")
+    p = dm_sub.add_parser("tick", help="run one DM check (issues dm_check ticket)")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", default="main")
+    p.add_argument("--trigger", default="",
+                   help="external trigger source (schedule|gmail-notification|manual|...): "
+                        "jumps the poll-interval queue, never the pile-up guard")
+    p = dm_sub.add_parser("report", help="ingest observed messages, queue reply drafts")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", default="main")
+    p.add_argument("--messages", required=True,
+                   help="observed-messages JSON (threads contract, see dm_agents/README.md)")
+    dm.set_defaults(func=cmd_dm_agent)
 
     cap = sub.add_parser("caption", help="platform-optimized caption generator")
     cap_sub = cap.add_subparsers(dest="op", required=True)

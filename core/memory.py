@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 DB_NAME = "memory.db"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # ---------------------------------------------------------------- schema ---
 
@@ -130,6 +130,22 @@ CREATE TABLE IF NOT EXISTS watcher_checkpoints (
     watcher_type TEXT DEFAULT '', account_label TEXT DEFAULT '',
     cursor_json TEXT DEFAULT '{}', updated_at TEXT NOT NULL);
 """,
+    4: """
+CREATE TABLE IF NOT EXISTS dm_agent_state (
+    platform TEXT NOT NULL, account_label TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    last_seen_id TEXT DEFAULT '',
+    last_inbound_id TEXT DEFAULT '',
+    last_inbound_at REAL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    active INTEGER DEFAULT 1,
+    stop_reason TEXT DEFAULT '',
+    last_cycle TEXT DEFAULT '',
+    last_cycle_ts REAL DEFAULT 0,
+    pending_check TEXT DEFAULT '',
+    idle_parked INTEGER DEFAULT 0,
+    PRIMARY KEY (platform, account_label, thread_id));
+""",
 }
 
 # Tables hashed for incremental backups (stable order).
@@ -137,7 +153,7 @@ HASHED_TABLES = ("accounts", "brand_voice", "people", "campaigns", "schedule",
                  "content", "performance", "decisions", "sops", "relations",
                  "conversations", "browser_sessions", "missions",
                  "actions_ledger", "scheduler_jobs", "analytics",
-                 "watcher_checkpoints")
+                 "watcher_checkpoints", "dm_agent_state")
 
 
 def db_path(home):
