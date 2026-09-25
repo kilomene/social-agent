@@ -19,6 +19,7 @@ any time with `autonomy revoke`.
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 
@@ -85,6 +86,35 @@ def active_mission():
     return missions.get_mission(st.get("mission"))
 
 
+def _topic_matches(topic, text):
+    """True if text is about the topic.
+
+    Exact phrase wins. Otherwise every word of the topic must appear in the
+    text as a whole word or a morphological variant (automate/automation/
+    automated). Words of 3 chars or fewer (e.g. 'ai') require an exact word
+    match so they can't hit inside unrelated words ('said', 'plain').
+    Pure substring matching caused false negatives on clearly on-topic
+    posts, so the gate is word-aware rather than substring-based — it stays
+    strict, it just understands word forms.
+    """
+    hay = text.lower()
+    t = (topic or "").lower().strip()
+    if not t:
+        return True
+    if t in hay:
+        return True
+    hay_words = set(re.findall(r"[a-z0-9]+", hay))
+    for tw in re.findall(r"[a-z0-9]+", t):
+        if len(tw) <= 3:
+            if tw not in hay_words:
+                return False
+        else:
+            stem = tw[:6]
+            if not any(len(w) > 3 and w.startswith(stem) for w in hay_words):
+                return False
+    return True
+
+
 def check_scope(platform, action, text=""):
     """(allowed, reason). Pure function of the active mission."""
     if action in NEVER_AUTO:
@@ -98,8 +128,7 @@ def check_scope(platform, action, text=""):
         return False, f"action {action!r} not allowed by mission"
     topics = mission.get("topics") or []
     if topics and text:
-        hay = text.lower()
-        if not any(t.lower() in hay for t in topics):
+        if not any(_topic_matches(t, text) for t in topics):
             return False, "content outside mission topics"
     return True, "in mission scope"
 

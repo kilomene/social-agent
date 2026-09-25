@@ -143,3 +143,42 @@ def test_mission_limit_accepts_both_limit_key_styles(home, tmp_path, monkeypatch
         pass
     else:
         raise AssertionError("reply cap not enforced")
+
+
+def test_topic_match_accepts_morphological_variants(home, tmp_path, monkeypatch):
+    """Regression: check_scope must not refuse on-topic posts that use a
+    morphological variant of a topic word. 2026-09-25: a growth-round X post
+    ("...automate the setup...") was refused as 'content outside mission
+    topics' because the old pure-substring check needed the literal word
+    'automation'. The gate stays strict — it just understands word forms now.
+    """
+    import autonomy as autonomy_mod
+    import missions as missions_mod
+    mdir = str(tmp_path / "missions")
+    monkeypatch.setenv("SOCIAL_AGENT_MISSIONS", mdir)
+    missions_mod.create_mission(
+        "topictest", ["x"], ["ai video", "automation", "building real products"],
+        ["post"], {"max_posts_per_day": 6})
+    autonomy_mod.grant("topictest")
+    # the real refused post: about automation, uses 'automate'
+    ok, reason = autonomy_mod.check_scope(
+        "x", "post",
+        "Most people automate the fun part and keep the boring part manual. "
+        "I've been flipping it: automate the setup, the renders, the "
+        "publishing plumbing.")
+    assert ok, f"on-topic post refused (false negative): {reason}"
+    # exact phrase still matches
+    ok, _ = autonomy_mod.check_scope(
+        "x", "post", "New AI video workflow just dropped.")
+    assert ok
+    # plural/suffixed variants match
+    ok, _ = autonomy_mod.check_scope(
+        "x", "post", "My automated render pipeline finally works.")
+    assert ok
+    # genuinely off-topic still refused
+    ok, reason = autonomy_mod.check_scope(
+        "x", "post", "What a beautiful sunset at the beach today.")
+    assert not ok and "topics" in reason
+    # short topic word 'ai' must not match inside unrelated words
+    ok, _ = autonomy_mod.check_scope("x", "post", "He said it was plain luck.")
+    assert not ok
