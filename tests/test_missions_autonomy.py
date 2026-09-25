@@ -102,3 +102,44 @@ def test_autonomy_off_means_manual_approval(home):
             "--target", "v1")
     assert r.returncode == 0 and "DRY-RUN proposal" in r.stdout
     assert state(home, "actions.json")[0]["status"] == "proposed"
+
+
+def test_mission_limit_accepts_both_limit_key_styles(home, tmp_path, monkeypatch):
+    """Regression: check_mission_limit must enforce caps whether the mission
+    stores them as posts_per_day or max_posts_per_day (agent-growth uses the
+    max_ form; the old key_map silently skipped both)."""
+    import autonomy as autonomy_mod
+    import missions as missions_mod
+    mdir = str(tmp_path / "missions")
+    monkeypatch.setenv("SOCIAL_AGENT_MISSIONS", mdir)
+    missions_mod.create_mission(
+        "captest", ["x"], ["automation"],
+        ["post", "like", "reply"],
+        {"max_posts_per_day": 1, "likes_per_day": 2,
+         "max_replies_per_day": 1})
+    autonomy_mod.grant("captest")
+    # max_ form enforced: second post raises
+    autonomy_mod.check_mission_limit("post")
+    try:
+        autonomy_mod.check_mission_limit("post")
+    except RuntimeError as e:
+        assert "1/1" in str(e)
+    else:
+        raise AssertionError("post cap not enforced")
+    # plain form enforced too
+    autonomy_mod.check_mission_limit("like")
+    autonomy_mod.check_mission_limit("like")
+    try:
+        autonomy_mod.check_mission_limit("like")
+    except RuntimeError as e:
+        assert "2/2" in str(e)
+    else:
+        raise AssertionError("like cap not enforced")
+    # reply (previously unmapped) enforced via max_ form
+    autonomy_mod.check_mission_limit("reply")
+    try:
+        autonomy_mod.check_mission_limit("reply")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("reply cap not enforced")

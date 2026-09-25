@@ -112,9 +112,16 @@ def check_mission_limit(action):
         return
     limits = mission.get("limits") or {}
     key_map = {"post": "posts_per_day", "like": "likes_per_day",
-               "follow": "follows_per_day", "comment": "comments_per_day"}
-    lkey = key_map.get(action)
-    if not lkey or lkey not in limits:
+               "follow": "follows_per_day", "comment": "comments_per_day",
+               "reply": "replies_per_day", "share": "shares_per_day",
+               "retweet": "retweets_per_day", "unfollow": "unfollows_per_day"}
+    base = key_map.get(action)
+    if not base:
+        return
+    # Missions store limits either as "posts_per_day" or "max_posts_per_day"
+    # depending on how they were created; accept both.
+    lkey = next((k for k in (base, "max_" + base) if k in limits), None)
+    if not lkey:
         return
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     counters = st.setdefault("counters", {}).setdefault(day, {})

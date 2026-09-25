@@ -218,6 +218,7 @@
   "tests/test_missions_autonomy.py::test_autonomy_grant_revoke_status",
   "tests/test_missions_autonomy.py::test_autonomy_off_means_manual_approval",
   "tests/test_missions_autonomy.py::test_mission_create_list_show",
+  "tests/test_missions_autonomy.py::test_mission_limit_accepts_both_limit_key_styles",
   "tests/test_moderation.py::test_auto_hide_no_match",
   "tests/test_moderation.py::test_auto_hide_rule_match",
   "tests/test_moderation.py::test_comment_watcher_moderation_kinds",
