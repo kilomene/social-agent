@@ -128,7 +128,16 @@ audience questions → video ideas) `crisis` (negative-spike urgent alerts)
 - `video info/clip/trim/concat/to-vertical/to-horizontal/frame/compress/plan`
   — local editing via **ffmpeg** (the only external dependency; see
   `video/SETUP.md`). Prints exact commands (`--dry-run`), never overwrites
-  inputs. Guardrails §18.
+  inputs.
+- `video fit/preflight` — smart aspect-ratio fitting against `video/specs.yaml`
+  (checked 2026-09-25; `video/SPECS.md`). `--for tiktok[:feed]`,
+  `youtube:shorts|long-form`, etc. Default strategy is **pad** (blurred fill,
+  nothing cut); `--crop` needs `--focus center|top|bottom|left|right|face`
+  (face needs OpenCV, else falls back to center with a warning) and surfaces
+  what will be cut before executing. `video preflight` validates aspect,
+  resolution, duration, size, container against the spec with concrete fixes.
+  `post draft --video <file>` runs the gate and refuses the draft on FAIL.
+  Guardrails §19.
 - `audio clip/loop/mix/extract/normalize` — same ffmpeg contract; mixes duck
   the music bed under voiceover via sidechain compression; loudness presets
   per platform. Music must come from licensed libraries or your own audio

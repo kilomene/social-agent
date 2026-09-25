@@ -32,3 +32,16 @@ here (nothing half-runs). The command *builders* (`video/ffmpeg.py`,
   (transparency: you can copy-paste it yourself).
 - Edit plans (`video plan create/run`) chain builders with temp
   intermediates; dry-run mode prints commands without executing.
+
+## Optional: face-aware cropping
+
+`video fit --crop --focus face` centers the crop box on the largest detected
+face. It needs OpenCV:
+
+```bash
+pip install opencv-python
+```
+
+Without it, `--focus face` falls back to center with a warning — and
+`--focus center|top|bottom|left|right` or explicit `--focus-x/--focus-y`
+fractions work with no dependency at all.

@@ -47,7 +47,8 @@ def run_cmd(argv, dry_run=False):
 
 
 def info(input_path):
-    """Probe a file -> {"duration", "width", "height", "fps", "vcodec", "acodec"}."""
+    """Probe a file -> {"duration", "width", "height", "fps", "vcodec", "acodec",
+    "file_size", "container"}."""
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"input not found: {input_path!r}")
     if not ffprobe():
@@ -60,7 +61,10 @@ def info(input_path):
     if proc.returncode != 0:
         raise RuntimeError(f"ffprobe failed: {proc.stderr.strip()[-300:]}")
     data = json.loads(proc.stdout or "{}")
-    out = {"duration": float(data.get("format", {}).get("duration", 0) or 0)}
+    out = {"duration": float(data.get("format", {}).get("duration", 0) or 0),
+           "file_size": os.path.getsize(input_path),
+           "container": os.path.splitext(input_path)[1].lower().lstrip(".") or "mp4",
+           "path": input_path}
     for s in data.get("streams", []):
         if s.get("codec_type") == "video" and "width" not in out:
             out.update({"width": s.get("width"), "height": s.get("height"),
@@ -108,32 +112,31 @@ def build_concat(inputs, output_path, strict=True):
                    "-c:a", "aac", output_path]
 
 
-def build_to_vertical(input_path, output_path, width=1080, height=1920, strict=True):
-    """16:9 -> 9:16: blurred-background fill with the sharp video centered."""
-    _guard(input_path, output_path, strict)
-    filt = (
+def pad_filter(width, height):
+    """Non-destructive fit filtergraph: blurred-background fill with the sharp
+    video centered. Preserves 100% of the source frame — the safe default for
+    any aspect-ratio mismatch (see video/fit.py)."""
+    return (
         f"[0:v]split=2[bg][fg];"
         f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},boxblur=20:2[bg2];"
         f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
         f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,format=yuv420p"
     )
-    return [FFMPEG, "-y", "-i", input_path, "-vf", filt,
+
+
+def build_to_vertical(input_path, output_path, width=1080, height=1920, strict=True):
+    """16:9 -> 9:16: routes through the smart fitter (pad strategy)."""
+    _guard(input_path, output_path, strict)
+    return [FFMPEG, "-y", "-i", input_path, "-vf", pad_filter(width, height),
             "-c:v", "libx264", "-preset", "fast", "-crf", "19",
             "-c:a", "aac", output_path]
 
 
 def build_to_horizontal(input_path, output_path, width=1920, height=1080, strict=True):
-    """9:16 -> 16:9: blurred-background fill with the sharp video centered."""
+    """9:16 -> 16:9: routes through the smart fitter (pad strategy)."""
     _guard(input_path, output_path, strict)
-    filt = (
-        f"[0:v]split=2[bg][fg];"
-        f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},boxblur=20:2[bg2];"
-        f"[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fg2];"
-        f"[bg2][fg2]overlay=(W-w)/2:(H-h)/2,format=yuv420p"
-    )
-    return [FFMPEG, "-y", "-i", input_path, "-vf", filt,
+    return [FFMPEG, "-y", "-i", input_path, "-vf", pad_filter(width, height),
             "-c:v", "libx264", "-preset", "fast", "-crf", "19",
             "-c:a", "aac", output_path]
 

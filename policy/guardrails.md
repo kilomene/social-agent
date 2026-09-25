@@ -222,3 +222,28 @@ only acting pauses.
   `normalize` (loudness to documented platform targets). See `audio/MUSIC.md`:
   the tool clips audio **you provide** — use platform-licensed libraries or
   your own audio; it never sources copyrighted music itself.
+
+## 19. Video sizing: never crop blindly
+
+- The agent knows every platform's video spec (`video/specs.yaml`, checked
+  2026-09-25; human-readable `video/SPECS.md`). TikTok/Reels/Shorts want
+  9:16 (1080×1920); YouTube long-form wants 16:9 (1920×1080); Instagram and
+  Facebook feeds want 4:5 (1080×1350); X and Reddit default to 16:9.
+- **Pad over crop, always.** When a source doesn't match the target slot,
+  `video fit` pads (blurred-background fill) by default — 100% of the frame
+  is preserved, nothing is cut, and the video can never "look like nonsense".
+- **Cropping is destructive and needs a focus point.** `video fit --crop`
+  without `--focus` (or `--focus-x/--focus-y`) is **refused**. Before any
+  crop executes, the agent surfaces what WILL be cut: the percent of the
+  frame lost and exactly which edges (e.g. "cuts 31.2% of the frame — left
+  and right edges removed"). `--focus face` centers on the largest detected
+  face when OpenCV is installed, otherwise falls back to center with a
+  warning (see `video/SPECS.md`).
+- **Pre-post gate.** `post draft --video <file>` runs the video preflight
+  against the platform's default placement and REFUSES the draft on FAIL,
+  with the exact `video fit` command that fixes it. `video preflight
+  --input <file> --for youtube:shorts` validates aspect, resolution,
+  duration, file size, and container against the spec.
+- The YouTube quality checklist (`youtube preflight`) accepts an optional
+  `--video --placement long-form|shorts` that delegates to the spec
+  preflight — packaging rules and file rules are checked together.

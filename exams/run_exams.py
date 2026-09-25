@@ -187,12 +187,121 @@ def exam_6_post_needs_approval():
 
 
 
-EXAMS = [exam_1_watcher_proposes_without_acting,
-         exam_2_engage_blocked_without_approval,
-         exam_3_rate_limit_enforced,
-         exam_4_quiet_hours,
-         exam_5_approval_lifecycle,
-         exam_6_post_needs_approval]
+# ------------------------------------------- video specs / smart fit exams ---
+
+def _gen_fixture(path, size="640x480", duration=4):
+    import shutil
+    if not shutil.which("ffmpeg"):
+        return False
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                    "-i", f"testsrc=duration={duration}:size={size}:rate=30",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", path],
+                   check=True)
+    return True
+
+
+def exam_34_specs_lookup():
+    import shutil
+    ex = Exam("exam-34", "specs lookup returns 9:16 for tiktok feed, 16:9 for youtube long-form")
+    home = fresh_home()
+    sys.path.insert(0, REPO)
+    from video import fit as vfit
+    specs = vfit.load_specs()
+    ex.check("tiktok feed is 9:16", specs["tiktok"]["feed"]["aspect"] == "9:16")
+    ex.check("youtube long-form is 16:9", specs["youtube"]["long-form"]["aspect"] == "16:9")
+    ex.check("youtube shorts is 9:16", specs["youtube"]["shorts"]["aspect"] == "9:16")
+    ex.check("tiktok feed resolution 1080x1920",
+             (specs["tiktok"]["feed"]["width"], specs["tiktok"]["feed"]["height"]) == (1080, 1920))
+    ex.check("11 placements across 6 platforms",
+             sum(len(v) for v in specs.values()) == 11 and len(specs) == 6,
+             f"{len(specs)} platforms, {sum(len(v) for v in specs.values())} placements")
+    return ex
+
+
+def exam_35_fit_defaults_to_pad():
+    ex = Exam("exam-35", "4:3 -> 9:16 fit defaults to pad (nothing is cut)")
+    home = fresh_home()
+    mp4 = os.path.join(home, "four_three.mp4")
+    if not _gen_fixture(mp4, "640x480"):
+        ex.check("ffmpeg present", False, "ffmpeg missing")
+        return ex
+    out = os.path.join(home, "fitted.mp4")
+    r = run(home, None, "video", "fit", "--input", mp4, "--output", out,
+            "--for", "tiktok", "--dry-run")
+    ex.check("fit exits 0", r.returncode == 0, r.stderr.strip()[:160])
+    ex.check("strategy is pad", "strategy : pad" in r.stdout, r.stdout[:240])
+    ex.check("pad uses blurred fill", "boxblur" in r.stdout, r.stdout[:240])
+    ex.check("no destructive crop-to-fill box in args",
+             "crop=1080:1920:740:0" not in r.stdout, r.stdout[:240])
+    ex.check("dry-run wrote nothing", not os.path.exists(out))
+    return ex
+
+
+def exam_36_crop_refused_without_focus():
+    ex = Exam("exam-36", "crop without a focus point is refused")
+    home = fresh_home()
+    mp4 = os.path.join(home, "src.mp4")
+    if not _gen_fixture(mp4, "640x480"):
+        ex.check("ffmpeg present", False, "ffmpeg missing")
+        return ex
+    r = run(home, None, "video", "fit", "--input", mp4,
+            "--output", os.path.join(home, "out.mp4"),
+            "--for", "tiktok", "--crop", "--dry-run")
+    ex.check("refused (exit 2)", r.returncode == 2, r.stderr.strip()[:160])
+    ex.check("refusal explains the focus requirement",
+             "focus" in (r.stderr + r.stdout).lower(),
+             (r.stderr + r.stdout)[:200])
+    return ex
+
+
+def exam_37_crop_focus_top_box_math():
+    ex = Exam("exam-37", "crop with --focus top produces the correct crop box")
+    home = fresh_home()
+    mp4 = os.path.join(home, "src.mp4")
+    if not _gen_fixture(mp4, "640x480"):
+        ex.check("ffmpeg present", False, "ffmpeg missing")
+        return ex
+    r = run(home, None, "video", "fit", "--input", mp4,
+            "--output", os.path.join(home, "out.mp4"),
+            "--for", "tiktok", "--crop", "--focus", "top", "--dry-run")
+    ex.check("exit 0", r.returncode == 0, r.stderr.strip()[:160])
+    # 640x480 -> cover scale 4.0 -> 2560x1920; focus top => crop box offset (740, 0)
+    ex.check("crop box math correct (crop=1080:1920:740:0)",
+             "crop=1080:1920:740:0" in r.stdout, r.stdout[:300])
+    ex.check("what gets cut is surfaced", "cuts" in r.stdout and "left" in r.stdout,
+             r.stdout[:300])
+    return ex
+
+
+def exam_38_preflight_fails_wrong_aspect():
+    ex = Exam("exam-38", "preflight FAILs a 16:9 video for youtube:shorts and suggests the fix")
+    home = fresh_home()
+    mp4 = os.path.join(home, "wide.mp4")
+    if not _gen_fixture(mp4, "1280x720"):
+        ex.check("ffmpeg present", False, "ffmpeg missing")
+        return ex
+    r = run(home, None, "video", "preflight", "--input", mp4, "--for", "youtube:shorts")
+    ex.check("FAILED (nonzero exit)", r.returncode != 0, r.stderr.strip()[:200])
+    ex.check("aspect check failed", "aspect" in r.stdout and "FAIL" in r.stdout,
+             r.stdout[:240])
+    ex.check("fix suggests the fit command",
+             "video fit" in (r.stdout + r.stderr), (r.stdout + r.stderr)[-300:])
+    return ex
+
+
+def exam_39_preflight_passes_correct_video():
+    ex = Exam("exam-39", "preflight PASSes a correct 9:16 video for youtube:shorts")
+    home = fresh_home()
+    mp4 = os.path.join(home, "vertical.mp4")
+    if not _gen_fixture(mp4, "720x1280"):
+        ex.check("ffmpeg present", False, "ffmpeg missing")
+        return ex
+    r = run(home, None, "video", "preflight", "--input", mp4, "--for", "youtube:shorts")
+    ex.check("exit 0", r.returncode == 0, r.stderr.strip()[:160])
+    ex.check("preflight PASSED", "PASSED" in r.stdout, r.stdout[:240])
+    ex.check("aspect check passed", "[PASS] aspect" in r.stdout, r.stdout[:240])
+    return ex
+
 
 
 # ------------------------------------------------- new exams (upgrade) ---
@@ -777,7 +886,13 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_30_hide_needs_approval,
          exam_31_caption_passes_gates,
          exam_32_video_info_clip_fixture,
-         exam_33_audio_clip_fades_args]
+         exam_33_audio_clip_fades_args,
+         exam_34_specs_lookup,
+         exam_35_fit_defaults_to_pad,
+         exam_36_crop_refused_without_focus,
+         exam_37_crop_focus_top_box_math,
+         exam_38_preflight_fails_wrong_aspect,
+         exam_39_preflight_passes_correct_video]
 
 
 def main():

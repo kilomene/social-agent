@@ -1,0 +1,234 @@
+# Platform video specs (checked 2026-09-25; see video/SPECS.md for sources).
+# Each placement: aspect (W:H), recommended + minimum resolution, max duration
+# (seconds), max file size (MB), accepted containers, preferred video codec,
+# safe-zone notes. This is a summary, not legal/official documentation.
+# NOTE: this file is parsed by policy/yaml_lite.py — use block-style lists
+# only (flow-style ["a", "b"] is not supported).
+
+tiktok:
+  feed:
+    aspect: "9:16"
+    width: 1080
+    height: 1920
+    min_width: 720
+    min_height: 1280
+    max_duration: 600
+    max_size_mb: 287
+    containers:
+      - "mp4"
+      - "mov"
+      - "webm"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "right side ~150px: like/comment/share action buttons cover this strip"
+      - "bottom ~250px: caption + progress bar overlay"
+      - "top ~150px: TikTok header/progress UI"
+      - "keep text 150px clear of all edges"
+    notes: "Vertical is required. 21-34s is the highest-completion sweet spot; 10 min max exists but rarely performs."
+
+youtube:
+  long-form:
+    aspect: "16:9"
+    width: 1920
+    height: 1080
+    min_width: 1280
+    min_height: 720
+    max_duration: 43200
+    max_size_mb: 262144
+    containers:
+      - "mp4"
+      - "mov"
+      - "mpeg"
+      - "webm"
+    codecs:
+      - "h264"
+      - "vp9"
+    audio: "aac"
+    safe_zones:
+      - "4:3 and 1:1 sources are pillarboxed by YouTube - letterbox deliberately instead"
+    notes: "16:9 landscape. 256 GB cap. Loudness target -14 LUFS."
+  shorts:
+    aspect: "9:16"
+    accepted_aspects:
+      - "1:1"
+    width: 1080
+    height: 1920
+    min_width: 720
+    min_height: 1280
+    max_duration: 180
+    max_size_mb: 262144
+    containers:
+      - "mp4"
+      - "mov"
+      - "webm"
+    codecs:
+      - "h264"
+      - "vp9"
+    audio: "aac"
+    safe_zones:
+      - "bottom ~300px: title + description overlay"
+      - "right side: action buttons (like/comment/share)"
+      - "square 1:1 is accepted but vertical 9:16 fills the feed"
+    notes: "Up to 3 minutes accepted; <=60s is the classic high-performing length. Add #Shorts to title/description for reliable classification."
+
+instagram:
+  reels:
+    aspect: "9:16"
+    width: 1080
+    height: 1920
+    min_width: 720
+    min_height: 1280
+    max_duration: 180
+    max_size_mb: 4096
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "bottom 20%: caption overlay"
+      - "right side: action buttons"
+    notes: "Up to 3 minutes accepted; 15-90s is the recommended range. 4 GB max."
+  stories:
+    aspect: "9:16"
+    width: 1080
+    height: 1920
+    min_width: 720
+    min_height: 1280
+    max_duration: 60
+    max_size_mb: 4096
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "top 14%: profile + close UI unsafe for key content"
+      - "bottom 20%: reply/link UI unsafe for key content"
+    notes: "60s total; longer clips are auto-split into 15s segments by Instagram."
+  feed:
+    aspect: "4:5"
+    accepted_aspects:
+      - "1:1"
+      - "16:9"
+    width: 1080
+    height: 1350
+    min_width: 720
+    min_height: 900
+    max_duration: 3600
+    max_size_mb: 4096
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "4:5 portrait takes the most feed space; 1:1 (1080x1080) and 16:9 (1920x1080) also accepted"
+    notes: "4:5 recommended for mobile feed; 1:1 square and 16:9 landscape accepted."
+
+facebook:
+  feed:
+    aspect: "4:5"
+    accepted_aspects:
+      - "1:1"
+      - "16:9"
+    width: 1080
+    height: 1350
+    min_width: 720
+    min_height: 900
+    max_duration: 14400
+    max_size_mb: 4096
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "1:1 square (1080x1080) also recommended; 16:9 landscape accepted"
+      - "85% of Facebook video is watched silent - captions are essential"
+    notes: "4:5 portrait or 1:1 square recommended for mobile; up to 240 min max."
+  reels:
+    aspect: "9:16"
+    width: 1080
+    height: 1920
+    min_width: 720
+    min_height: 1280
+    max_duration: 90
+    max_size_mb: 4096
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "bottom overlay: caption + CTA"
+      - "right side: action buttons"
+    notes: "Up to 90 seconds. Same vertical rules as Instagram Reels."
+  stories:
+    aspect: "9:16"
+    width: 1080
+    height: 1920
+    min_width: 720
+    min_height: 1280
+    max_duration: 60
+    max_size_mb: 4096
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "top 14% and bottom 20% unsafe for key content (same as Instagram Stories)"
+    notes: "Vertical stories; short clips perform best."
+
+x:
+  feed:
+    aspect: "16:9"
+    accepted_aspects:
+      - "9:16"
+      - "1:1"
+    width: 1920
+    height: 1080
+    min_width: 640
+    min_height: 360
+    max_duration: 140
+    max_size_mb: 512
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "9:16 vertical and 1:1 square accepted; 16:9 landscape is the default"
+    notes: "2:20 max for most accounts (140s); 512 MB cap."
+
+reddit:
+  feed:
+    aspect: "16:9"
+    accepted_aspects:
+      - "9:16"
+      - "1:1"
+    width: 1920
+    height: 1080
+    min_width: 640
+    min_height: 360
+    max_duration: 900
+    max_size_mb: 1024
+    containers:
+      - "mp4"
+      - "mov"
+    codecs:
+      - "h264"
+    audio: "aac"
+    safe_zones:
+      - "9:16 vertical and 1:1 square accepted by native player"
+    notes: "Native video: up to 15 minutes, 1 GB, 1080p."

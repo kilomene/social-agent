@@ -47,6 +47,7 @@ from moderation import classify as mod_classify
 from captions import generate as captions_mod
 from video import ffmpeg as vff
 from video import plans as vplans
+from video import fit as vfit
 from audio import clips as audio_mod
 
 VERSION = "0.1.0"
@@ -475,6 +476,47 @@ def cmd_watch(args):
 
 # ------------------------------------------------------------------- post ---
 
+DEFAULT_VIDEO_FOR = {
+    "tiktok": "tiktok:feed",
+    "youtube": "youtube:long-form",
+    "instagram": "instagram:reels",
+    "facebook": "facebook:feed",
+    "x": "x:feed",
+    "reddit": "reddit:feed",
+}
+
+
+def _require_ffprobe():
+    path = vff.ffprobe()
+    if not path:
+        raise UsageError("ffprobe not found — see video/SETUP.md for install steps")
+    return path
+
+
+def video_preflight_gate(input_path, target):
+    """Validate a video file against a placement spec.
+
+    Prints the check table. Returns True on PASS. Raises UsageError on FAIL
+    with concrete fixes (fail-closed: a wrongly-sized video never posts).
+    """
+    _require_ffprobe()
+    inf = vff.info(input_path)
+    res = vfit.preflight(inf, target)
+    print(f"== video preflight: {res['target']} ==")
+    for c in res["checks"]:
+        mark = "PASS" if c["ok"] else "FAIL"
+        print(f"  [{mark}] {c['name']}: {c['detail']}")
+    for a in res["advisories"]:
+        print(f"  [info] {a}")
+    if res["passed"]:
+        print("video preflight PASSED")
+        return True
+    print("video preflight FAILED:", file=sys.stderr)
+    for f in res["fixes"]:
+        print(f"  - {f}", file=sys.stderr)
+    raise UsageError("video does not meet the target spec — fix it and re-run")
+
+
 def cmd_post(args):
     queue = load_json("queue.json", [])
     if args.op == "draft":
@@ -482,10 +524,13 @@ def cmd_post(args):
         acct = resolve_account(args.account)
         label = acct.get("label") or acct["username"]
         _warn(content_gates(args.platform, label, args.text or "", "post_draft"))
+        if args.video:
+            target = DEFAULT_VIDEO_FOR.get(args.platform, f"{args.platform}:feed")
+            video_preflight_gate(args.video, target)
         pid = args.id or new_id("p")
         queue.append({
             "id": pid, "platform": args.platform, "account": acct["username"],
-            "text": args.text, "media": args.media or "",
+            "text": args.text, "media": args.media or "", "video": args.video or "",
             "status": "draft", "created": utcnow(),
         })
         save_json("queue.json", queue)
@@ -1041,8 +1086,8 @@ def cmd_youtube(args):
     if args.op == "preflight":
         meta = {
             "title": args.title, "thumbnail": args.thumbnail,
-            "hook_30s": args.hook_30s, "resolution_ok": args.resolution == "1080p" or args.resolution == "4k",
-            "audio_clean": args.audio, "retention_edit": args.retention_edit,
+            "hook_30s": args.hook_30s, "resolution": args.resolution == "1080p" or args.resolution == "4k",
+            "audio": args.audio, "retention_edit": args.retention_edit,
             "description": args.description, "end_screen": args.end_screen,
             "captions": args.captions,
         }
@@ -1056,6 +1101,9 @@ def cmd_youtube(args):
                   + ", ".join(missing), file=sys.stderr)
             sys.exit(2)
         print("preflight passed — required quality fields present")
+        if args.video:
+            target = f"youtube:{args.placement}"
+            video_preflight_gate(args.video, target)
     elif args.op == "titles":
         variants = yt_mod.title_variants(args.idea, args.keyword or "")
         for v in variants:
@@ -1356,14 +1404,68 @@ def cmd_video(args):
             print(f"concatenated {len(inputs)} files -> {args.output}")
     elif args.op == "to-vertical":
         _require_ffmpeg()
-        vff.run_cmd(vff.build_to_vertical(args.input, args.output, strict=not dry), dry_run=dry)
-        if not dry:
-            print(f"vertical 9:16 -> {args.output}")
+        inf = vff.info(args.input)
+        fplan = vfit.plan(inf, "tiktok:feed")
+        print(fplan["reason"])
+        if fplan["strategy"] == "noop":
+            if not dry:
+                import shutil as _shutil
+                _shutil.copy2(args.input, args.output)
+                print(f"already 9:16 — copied -> {args.output}")
+            else:
+                print("dry-run: would copy input (already 9:16)")
+        else:
+            vff.run_cmd(vfit.build_fit(args.input, args.output, fplan,
+                                       strict=not dry), dry_run=dry)
+            if not dry:
+                print(f"vertical 9:16 -> {args.output}")
     elif args.op == "to-horizontal":
         _require_ffmpeg()
-        vff.run_cmd(vff.build_to_horizontal(args.input, args.output, strict=not dry), dry_run=dry)
-        if not dry:
-            print(f"horizontal 16:9 -> {args.output}")
+        inf = vff.info(args.input)
+        fplan = vfit.plan(inf, "youtube:long-form")
+        print(fplan["reason"])
+        if fplan["strategy"] == "noop":
+            if not dry:
+                import shutil as _shutil
+                _shutil.copy2(args.input, args.output)
+                print(f"already 16:9 — copied -> {args.output}")
+            else:
+                print("dry-run: would copy input (already 16:9)")
+        else:
+            vff.run_cmd(vfit.build_fit(args.input, args.output, fplan,
+                                       strict=not dry), dry_run=dry)
+            if not dry:
+                print(f"horizontal 16:9 -> {args.output}")
+    elif args.op == "fit":
+        _require_ffmpeg()
+        target = getattr(args, "for_", None) or "tiktok"
+        inf = vff.info(args.input)
+        try:
+            fplan = vfit.plan(inf, target, crop=args.crop, focus=args.focus,
+                              focus_x=args.focus_x, focus_y=args.focus_y)
+        except ValueError as e:
+            print(f"REFUSED: {e}", file=sys.stderr)
+            sys.exit(2)
+        print(f"strategy : {fplan['strategy']}")
+        print(f"target   : {fplan['platform']}:{fplan['placement']} "
+              f"({fplan['spec']['aspect']})")
+        print(f"reason   : {fplan['reason']}")
+        if fplan.get("crop"):
+            box = fplan["crop"]["box"]
+            print(f"crop box : scaled {box['scaled'][0]}x{box['scaled'][1]}, "
+                  f"offset {box['offset']}, size {box['size'][0]}x{box['size'][1]}")
+            print(f"cut      : {fplan['crop']['summary']}")
+        for w in fplan.get("warnings", []):
+            print(f"warning  : {w}")
+        if fplan["strategy"] == "noop":
+            print("no conversion needed — nothing to do")
+        else:
+            vff.run_cmd(vfit.build_fit(args.input, args.output, fplan,
+                                       strict=not dry), dry_run=dry)
+            if not dry:
+                print(f"fitted -> {args.output}")
+    elif args.op == "preflight":
+        video_preflight_gate(args.input, getattr(args, "for_", None) or "tiktok")
     elif args.op == "frame":
         _require_ffmpeg()
         vff.run_cmd(vff.build_frame(args.input, args.output, at=args.at,
@@ -1494,6 +1596,7 @@ def cmd_doctor(args):
                           ("captions.generate", "caption generator"),
                           ("video.ffmpeg", "video command builders"),
                           ("video.plans", "video edit plans"),
+                          ("video.fit", "smart aspect-ratio fitter"),
                           ("audio.clips", "audio clipping/mixing")):
         try:
             __import__(modname)
@@ -1565,6 +1668,7 @@ def build_parser():
     p.add_argument("--account", required=True)
     p.add_argument("--text", required=True)
     p.add_argument("--media", default="")
+    p.add_argument("--video", default="", help="video file: spec-preflighted before drafting")
     p.add_argument("--id", default=None)
     p = p_sub.add_parser("queue", help="move draft to queued")
     p.add_argument("id")
@@ -1703,6 +1807,9 @@ def build_parser():
     p.add_argument("--description", default="")
     p.add_argument("--end-screen", action="store_true")
     p.add_argument("--captions", action="store_true")
+    p.add_argument("--video", default="", help="video file: also run the spec preflight")
+    p.add_argument("--placement", default="long-form", choices=["long-form", "shorts"],
+                   help="which YouTube placement to validate --video against")
     p = y_sub.add_parser("titles", help="5 scored title variants from a raw idea")
     p.add_argument("idea")
     p.add_argument("--keyword", default="")
@@ -1861,6 +1968,25 @@ def build_parser():
     p.add_argument("--output", required=True)
     p.add_argument("--preset", default="tiktok",
                    help="tiktok|reels|shorts|youtube")
+    p = vi_sub.add_parser("fit", help="smart aspect-ratio fit (pad by default, never blind-crops)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print plan + ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--for", dest="for_", default="tiktok",
+                   help="target placement, e.g. tiktok, tiktok:feed, youtube:shorts, youtube:long-form")
+    p.add_argument("--crop", action="store_true",
+                   help="allow destructive crop-to-fill (requires --focus)")
+    p.add_argument("--focus", default=None,
+                   help="crop focus: center|top|bottom|left|right|face")
+    p.add_argument("--focus-x", type=float, default=None,
+                   help="crop focus x fraction 0..1 (with --focus-y)")
+    p.add_argument("--focus-y", type=float, default=None,
+                   help="crop focus y fraction 0..1 (with --focus-x)")
+    p = vi_sub.add_parser("preflight", help="validate a video file against a placement spec")
+    p.add_argument("--input", required=True)
+    p.add_argument("--for", dest="for_", default="tiktok",
+                   help="target placement, e.g. tiktok, youtube:shorts")
     p = vi_sub.add_parser("plan", help="stored edit plans")
     pl_sub = p.add_subparsers(dest="pop", required=True)
     p = pl_sub.add_parser("create", help="store an edit plan (JSON steps)")

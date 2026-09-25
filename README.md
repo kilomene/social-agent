@@ -139,6 +139,21 @@ social-agent audio clip --input song.mp3 --start 30 --duration 15 \
     --fade-in 2 --fade-out 3 --output hook.mp3
 social-agent audio mix --voiceover vo.mp3 --bed music.mp3 --output final.mp3
 social-agent audio normalize --input final.mp3 --output loud.mp3 --preset tiktok
+
+# smart aspect-ratio fitting — the agent knows every platform's video spec
+# (video/specs.yaml, checked 2026-09-25; human-readable video/SPECS.md).
+# Default is NEVER destructive: pad (blurred fill) keeps 100% of the frame.
+social-agent video fit --input cut.mp4 --output short.mp4 --for tiktok
+social-agent video fit --input wide.mp4 --output short.mp4 --for youtube:shorts --dry-run
+# crop-to-fill ONLY with an explicit focus point (--focus center|top|bottom|face);
+# without one, crop is refused. The agent tells you what WILL be cut first.
+social-agent video fit --input wide.mp4 --output short.mp4 \
+    --for tiktok --crop --focus face
+# pre-post gate: PASS/FAIL against the spec, with concrete fixes
+social-agent video preflight --input short.mp4 --for youtube:shorts
+# post draft with a video runs the spec preflight and REFUSES the draft on FAIL
+social-agent post draft --platform tiktok --account main \
+    --text "new tutorial is up" --video short.mp4
 ```
 
 Every video/audio command prints the exact ffmpeg invocation before running
