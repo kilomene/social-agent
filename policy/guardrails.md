@@ -109,3 +109,23 @@ only acting pauses.
   its own heartbeat every 10s. See `docs/heartbeat-integration.md`.
 - With no `base_url` configured, heartbeats run in log-only mode: recorded to
   `heartbeat.json`, zero network traffic.
+
+## 12. Platform Terms of Service — the ceiling above everything
+
+- Every platform has `platforms/<name>/terms.md` (human-readable, with links
+  to the official documents and a last-checked date) and
+  `platforms/<name>/tos_rules.yaml` (machine-readable, enforced by
+  `platforms/tos.py`).
+- For every acting operation and every watcher poll, the CLI checks the ToS
+  layer **first** — before mission scope, autonomy, quiet hours, and rate
+  limits. A ToS-prohibited action is **refused (exit 2)** and logged to
+  `refusals.jsonl`, even if an autonomous mission would otherwise allow it.
+  There is no override: not by mission, not by autonomy grant, not by any
+  approval the CLI records.
+- A `restricted` action proceeds but prints the platform's constraint as an
+  advisory, so the operator always sees the rule being operated under.
+- Honest gaps are stated in the docs, not hidden: e.g. X's terms prohibit
+  non-API automation outright, and this tool is browser-driven, so several X
+  automation categories are refused rather than faked.
+- These are plain-language summaries, not legal advice. The official documents
+  govern, and they change over time — re-check them periodically.

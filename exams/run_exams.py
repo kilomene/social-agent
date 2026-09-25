@@ -3,7 +3,7 @@
 isolated state dir, checks safety-critical behaviors, and records results.
 
 Run:  python3 exams/run_exams.py
-Writes: exams/RESULTS.md
+Appends: exams/RESULTS.md (one section per run; history is preserved)
 """
 
 import json
@@ -183,6 +183,8 @@ def exam_6_post_needs_approval():
     ex.check("no post is ever published by the CLI",
              "never posts by itself" in r.stdout, r.stdout.strip()[-80:])
     return ex
+
+
 
 
 EXAMS = [exam_1_watcher_proposes_without_acting,
@@ -401,6 +403,69 @@ def exam_15_content_idea_aggregation():
     ex.check("proposes a post angle", "proposes: post" in r.stdout, r.stdout.strip()[:200])
     return ex
 
+def exam_16_tos_scraping_refused():
+    ex = Exam("exam-16", "ToS-prohibited data collection is refused before any poll")
+    home = fresh_home()
+    run(home, None, "accounts", "add", "--platform", "x",
+        "--username", "examuser", "--label", "main")
+    fx = os.path.join(FX, "notifications.json")
+    r = run(home, None, "watch", "start", "--type", "notification", "--platform", "x",
+            "--account", "main", "--fixture", fx, "--id", "e16")
+    ex.check("watcher start refused (exit 2)", r.returncode == 2, r.stderr.strip())
+    ex.check("refusal cites the Terms of Service",
+             "ToS" in r.stderr, r.stderr.strip()[:160])
+    ex.check("no watcher was registered",
+             "e16" not in state(home, "watchers.json", {}))
+    refusals = [json.loads(l) for l in open(os.path.join(home, "refusals.jsonl"))]
+    ex.check("refusal logged with ToS reason",
+             len(refusals) == 1 and "ToS" in refusals[0]["reason"],
+             str(refusals[0])[:120] if refusals else "no refusals file")
+    return ex
+
+
+
+def exam_17_autonomy_cannot_override_tos():
+    ex = Exam("exam-17", "An autonomous mission cannot override a ToS prohibition")
+    home = fresh_home()
+    run(home, None, "accounts", "add", "--platform", "x",
+        "--username", "examuser", "--label", "main")
+    run(home, None, "mission", "create", "--name", "m17", "--platforms", "x",
+        "--topics", "ai video", "--actions", "like,post")
+    r = run(home, None, "autonomy", "grant", "--mission", "m17", "--confirm")
+    ex.check("autonomy granted", r.returncode == 0 and "GRANTED" in r.stdout,
+             r.stderr.strip()[:80])
+    r = run(home, None, "engage", "like", "--platform", "x",
+            "--account", "main", "--target", "v1")
+    ex.check("like refused despite autonomy (exit 2)", r.returncode == 2,
+             r.stderr.strip()[:120])
+    ex.check("refusal is a ToS refusal, not a scope block",
+             "ToS" in r.stderr and "scope" not in r.stderr,
+             r.stderr.strip()[:160])
+    ex.check("no proposal was created", state(home, "actions.json", []) == [])
+    refusals = [json.loads(l) for l in open(os.path.join(home, "refusals.jsonl"))]
+    ex.check("refusal logged with ToS reason",
+             len(refusals) == 1 and "ToS" in refusals[0]["reason"],
+             str(refusals[0])[:120] if refusals else "no refusals file")
+    return ex
+
+
+def exam_18_restricted_action_proceeds_with_advisory():
+    ex = Exam("exam-18", "A ToS-restricted action proceeds and shows the constraint")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "notifications.json")
+    r = run(home, None, "watch", "start", "--type", "notification",
+            "--platform", "tiktok", "--account", "main",
+            "--fixture", fx, "--id", "e18")
+    ex.check("watcher starts (exit 0)", r.returncode == 0, r.stderr.strip())
+    ex.check("ToS advisory shown", "ToS note" in r.stderr,
+             r.stderr.strip()[:160])
+    r = run(home, None, "watch", "run", "e18")
+    ex.check("poll proceeds", "4 new event(s)" in r.stdout, r.stdout.strip())
+    return ex
+
+
+
 
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
@@ -416,7 +481,10 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_12_heartbeat_protocol,
          exam_13_crisis_watcher,
          exam_14_trend_interest_filter,
-         exam_15_content_idea_aggregation]
+         exam_15_content_idea_aggregation,
+         exam_16_tos_scraping_refused,
+         exam_17_autonomy_cannot_override_tos,
+         exam_18_restricted_action_proceeds_with_advisory]
 
 
 def main():
@@ -443,8 +511,14 @@ def main():
             lines.append(f"- {tick} {label}{extra}")
         lines.append("")
     out = os.path.join(REPO, "exams", "RESULTS.md")
+    entry = "\n".join(lines).rstrip("\n") + "\n"
+    if os.path.exists(out):
+        # Append: every run is recorded, history is never overwritten.
+        with open(out, encoding="utf-8") as fh:
+            prev = fh.read().rstrip("\n")
+        entry = prev + "\n\n---\n\n" + entry
     with open(out, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines))
+        fh.write(entry)
     print(f"wrote {out}: {total_score}/{total_possible}")
     for ex in results:
         print(f"  {ex.name}: {ex.score}/{ex.total}")

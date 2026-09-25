@@ -1,0 +1,55 @@
+# Machine-readable ToS rules for Reddit.
+# Plain-language summaries only; the official documents govern (see terms.md).
+# Last checked: 2026-09-25. These documents change over time; re-check periodically.
+platform: reddit
+display_name: Reddit
+last_checked: 2026-09-25
+actions:
+  automated_likes:
+    status: prohibited
+    basis: "Reddit's Rules prohibit vote cheating and manipulation. Automated upvoting/downvoting is vote manipulation and is not permitted."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+  automated_comments:
+    status: restricted
+    basis: "Bots are a long-standing part of Reddit, but spam is prohibited and each subreddit's rules must be followed. Automated comments are permitted only where welcome, non-spammy, and compliant with subreddit rules; bot accounts should identify themselves as bots."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+      - https://redditinc.com/policies/data-api-terms
+  automated_follows:
+    status: restricted
+    basis: "Subscribing to subreddits is benign, but automated follow/unfollow churn or using follows to game visibility is manipulation. Keep it genuine and low-volume."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+  automated_reshares:
+    status: restricted
+    basis: "Spam is prohibited and subreddit rules govern crossposting. Automated reshares are permitted only where welcome and non-spammy."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+  automated_dms:
+    status: restricted
+    basis: "Unsolicited automated outreach is spam. Automated messages are permitted only in reply to user-initiated contact or where explicitly invited."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+  automated_posting:
+    status: restricted
+    basis: "Spam is prohibited and subreddit rules must be followed. Automated posting is permitted only where welcome; bot accounts should identify themselves as bots. This tool only drafts posts and records explicit human approval; it never publishes by itself."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+  automated_data_collection:
+    status: restricted
+    basis: "Reddit's User Agreement prohibits accessing, searching, or collecting data by automated means except as permitted in the Terms; scraping without Reddit's prior written consent is prohibited, while crawling per robots.txt is conditionally permitted. Bulk programmatic access belongs on the Data API under the Data API Terms (which also prohibit AI-training use without permission). Keep browser-based collection low-volume and own-account."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+      - https://redditinc.com/policies/data-api-terms
+  profile_modification:
+    status: restricted
+    basis: "Account changes must be human-directed. This tool only proposes profile changes; they require explicit human approval and are applied by the user."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+  automated_reading:
+    status: restricted
+    basis: "Keep automated reading low-volume and limited to the user's own account. Bulk collection belongs on the Data API under its terms."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026
+      - https://redditinc.com/policies/data-api-terms

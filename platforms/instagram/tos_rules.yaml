@@ -1,0 +1,52 @@
+# Machine-readable ToS rules for Instagram.
+# Plain-language summaries only; the official documents govern (see terms.md).
+# Last checked: 2026-09-25. These documents change over time; re-check periodically.
+platform: instagram
+display_name: Instagram
+last_checked: 2026-09-25
+actions:
+  automated_likes:
+    status: restricted
+    basis: "Instagram's Terms of Use prohibit accessing the service in automated ways without express permission, and inauthentic engagement is prohibited. Genuine, human-directed, low-volume likes are authentic; bulk or scripted liking is not."
+    sources:
+      - https://help.instagram.com/termsofuse
+  automated_comments:
+    status: restricted
+    basis: "Automated access without express permission is prohibited, and inauthentic or misleading behavior is banned. Human-reviewed, genuine replies are authentic; automated mass commenting is not."
+    sources:
+      - https://help.instagram.com/termsofuse
+  automated_follows:
+    status: restricted
+    basis: "Automated access without express permission is prohibited. Genuine follows are fine; automated follow/unfollow churn is not."
+    sources:
+      - https://help.instagram.com/termsofuse
+  automated_reshares:
+    status: restricted
+    basis: "Automated access without express permission is prohibited, and inauthentic engagement is banned. Genuine, human-directed shares are authentic; automated mass resharing is not."
+    sources:
+      - https://help.instagram.com/termsofuse
+  automated_dms:
+    status: restricted
+    basis: "Misleading, fraudulent, or unlawful use is prohibited. No unsolicited automated outreach; keep any messaging human-directed and low-volume."
+    sources:
+      - https://help.instagram.com/termsofuse
+  automated_posting:
+    status: restricted
+    basis: "Automated access without express permission is prohibited. This tool only drafts posts and records explicit human approval; it never publishes by itself."
+    sources:
+      - https://help.instagram.com/termsofuse
+  automated_data_collection:
+    status: restricted
+    basis: "Instagram's Terms of Use prohibit creating accounts or accessing/collecting information in an automated way without express permission, even while logged in. Low-volume, own-account, read-only monitoring is not affirmatively permitted; keep it minimal and prefer official tools where available."
+    sources:
+      - https://help.instagram.com/termsofuse
+  profile_modification:
+    status: restricted
+    basis: "Account changes must be human-directed. This tool only proposes profile changes; they require explicit human approval and are applied by the user."
+    sources:
+      - https://help.instagram.com/termsofuse
+  automated_reading:
+    status: restricted
+    basis: "Keep automated reading low-volume and limited to the user's own account. Bulk collection without permission is prohibited."
+    sources:
+      - https://help.instagram.com/termsofuse

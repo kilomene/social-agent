@@ -1,0 +1,55 @@
+# Machine-readable ToS rules for TikTok.
+# Plain-language summaries only; the official documents govern (see terms.md).
+# Last checked: 2026-09-25. These documents change over time; re-check periodically.
+platform: tiktok
+display_name: TikTok
+last_checked: 2026-09-25
+actions:
+  automated_likes:
+    status: restricted
+    basis: "TikTok's Terms of Service prohibit automated scripts that interact with the services, and the Community Guidelines prohibit fake engagement. Genuine, human-directed, low-volume likes are authentic engagement; bulk or scripted liking is not."
+    sources:
+      - https://www.tiktok.com/legal/page/us/terms-of-service/en
+      - https://www.tiktok.com/community-guidelines/en/integrity-authenticity?cgversion=2024H1update#3
+  automated_comments:
+    status: restricted
+    basis: "Automated scripts that interact with the services are prohibited, and spam or deceptive account behavior is banned. Human-reviewed, genuine replies are authentic; automated mass commenting is not."
+    sources:
+      - https://www.tiktok.com/legal/page/us/terms-of-service/en
+      - https://www.tiktok.com/community-guidelines/en/integrity-authenticity?cgversion=2024H1update#3
+  automated_follows:
+    status: restricted
+    basis: "The Community Guidelines prohibit using automation to operate accounts in bulk or artificially increase engagement signals. Genuine follows are fine; automated follow/unfollow churn is not."
+    sources:
+      - https://www.tiktok.com/community-guidelines/en/integrity-authenticity?cgversion=2024H1update#3
+  automated_reshares:
+    status: restricted
+    basis: "Manipulating engagement signals to amplify reach is prohibited. Genuine, human-directed reshares are authentic; automated mass resharing is not."
+    sources:
+      - https://www.tiktok.com/community-guidelines/en/integrity-authenticity?cgversion=2024H1update#3
+  automated_dms:
+    status: restricted
+    basis: "Automated scripts that interact with the services are prohibited without approval. No unsolicited automated outreach; keep any messaging human-directed and low-volume."
+    sources:
+      - https://www.tiktok.com/legal/page/us/terms-of-service/en
+  automated_posting:
+    status: restricted
+    basis: "Automated scripts that interact with the services are prohibited. This tool only drafts posts and records explicit human approval; it never publishes by itself."
+    sources:
+      - https://www.tiktok.com/legal/page/us/terms-of-service/en
+  automated_data_collection:
+    status: restricted
+    basis: "TikTok's Terms of Service prohibit scraping, crawling, or exporting data through any automated system without TikTok's written approval. Low-volume, own-account, read-only monitoring resembles normal use, but it is not affirmatively permitted; the sanctioned path is TikTok's official tools/APIs."
+    sources:
+      - https://www.tiktok.com/legal/page/us/terms-of-service/en
+      - https://www.tiktok.com/privacy/blog/how-we-combat-scraping/en
+  profile_modification:
+    status: restricted
+    basis: "Account changes must be human-directed. This tool only proposes profile changes; they require explicit human approval and are applied by the user."
+    sources:
+      - https://www.tiktok.com/legal/page/us/terms-of-service/en
+  automated_reading:
+    status: restricted
+    basis: "Keep automated reading low-volume and limited to the user's own account. Bulk collection or export without approval is prohibited."
+    sources:
+      - https://www.tiktok.com/legal/page/us/terms-of-service/en

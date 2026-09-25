@@ -1,0 +1,66 @@
+# Machine-readable ToS rules for X.
+# Plain-language summaries only; the official documents govern (see terms.md).
+# Last checked: 2026-09-25. These documents change over time; re-check periodically.
+# NOTE: X's developer guidelines require automation ONLY through the official X
+# API and prohibit non-API automation (browser scripting, scraping). This tool
+# is browser-driven, so several automation categories are outright prohibited
+# here. The sanctioned path for automation on X is the official API.
+platform: x
+display_name: X
+last_checked: 2026-09-25
+actions:
+  automated_likes:
+    status: prohibited
+    basis: "X's developer guidelines require automation only through the official X API and prohibit non-API automation; automated engagement is platform manipulation. Automated liking via this browser-driven tool is not permitted."
+    sources:
+      - https://x.com/en/tos
+      - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
+      - https://help.x.com/en/rulesandpolicies/xrules
+  automated_comments:
+    status: prohibited
+    basis: "Automated replies require the recipient's explicit consent, keyword-triggered replies are banned, and non-API automation is prohibited. Automated commenting via this tool is not permitted."
+    sources:
+      - https://x.com/en/tos
+      - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
+      - https://help.x.com/en/rulesandpolicies/xrules
+  automated_follows:
+    status: prohibited
+    basis: "Bulk, aggressive, or spammy automated following is prohibited, and non-API automation is prohibited. Automated following via this tool is not permitted."
+    sources:
+      - https://x.com/en/tos
+      - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
+  automated_reshares:
+    status: prohibited
+    basis: "Automated reposting for engagement is platform manipulation, and non-API automation is prohibited. Automated reshares via this tool are not permitted."
+    sources:
+      - https://x.com/en/tos
+      - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
+      - https://help.x.com/en/rulesandpolicies/xrules
+  automated_dms:
+    status: prohibited
+    basis: "Automated direct messages require explicit consent, opt-outs must be honored immediately, and bulk messaging is prohibited. Automated DMs via this tool are not permitted."
+    sources:
+      - https://x.com/en/tos
+      - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
+  automated_posting:
+    status: restricted
+    basis: "Write actions must follow X's Automation Rules: no spam, no bulk or aggressive behavior, bot accounts must disclose their bot identity. Automated publishing belongs on the official X API; this tool only drafts posts and records explicit human approval, never publishing by itself."
+    sources:
+      - https://x.com/en/tos
+      - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
+  automated_data_collection:
+    status: prohibited
+    basis: "X's Terms of Service prohibit crawling or scraping the services in any form, for any purpose, without X's prior written consent; access is limited to published interfaces (the API). Browser-based data collection by this tool is not permitted."
+    sources:
+      - https://x.com/en/tos
+      - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
+  profile_modification:
+    status: restricted
+    basis: "Account changes must be human-directed. This tool only proposes profile changes; they require explicit human approval and are applied by the user."
+    sources:
+      - https://x.com/en/tos
+  automated_reading:
+    status: restricted
+    basis: "Keep automated reading low-volume and limited to the user's own account. It is not affirmatively permitted outside published interfaces; the sanctioned path for programmatic reads is the official X API."
+    sources:
+      - https://x.com/en/tos

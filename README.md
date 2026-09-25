@@ -125,6 +125,11 @@ Read `policy/guardrails.md`. In short:
 - Conservative per-platform hourly/daily caps; the CLI refuses over-cap actions.
 - No credentials in the repo or in state — sign-in happens in your own browser.
 - Prohibited by design: mass follow/unfollow, comment spam, astroturfing.
+- Per-platform Terms of Service are the ceiling: `platforms/tos.py` checks
+  every acting operation and watcher poll against `platforms/<name>/tos_rules.yaml`
+  *before* missions, autonomy, quiet hours, and rate limits. A ToS-prohibited
+  action is refused (exit 2) and logged — no mission or approval can override
+  it. See `policy/guardrails.md` §12 and each platform's `terms.md`.
 
 ## Honest limitations
 
@@ -136,6 +141,10 @@ Read `policy/guardrails.md`. In short:
 - **Platform gaps are documented, not hidden** — see `platforms/capabilities.md`
   (e.g. no public write API for TikTok/Instagram personal accounts, YouTube's
   10k-units/day quota, X's paid API tiers).
+- **X's terms prohibit non-API automation outright**, and this tool is
+  browser-driven: automated likes, comments, follows, reposts, DMs, and
+  browser-based data collection on X are refused by the CLI rather than
+  faked. The sanctioned path is X's official API.
 - Fixture-based offline mode is for development and tests; live reading needs a
   logged-in browser session or official API credentials you create yourself.
 

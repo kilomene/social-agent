@@ -28,6 +28,7 @@ if REPO_ROOT not in sys.path:
 
 from policy import yaml_lite
 from platforms.base import get_adapter, SUPPORTED_PLATFORMS
+from platforms import tos as tos_mod
 from watchers import REGISTRY, WatcherError
 from engagement import interest as interest_mod
 from heartbeat import pinger as hb
@@ -144,7 +145,21 @@ def in_quiet_hours(now=None):
 
 
 def guard_acting(platform, action):
-    """Gate every acting operation: quiet hours + rate limits."""
+    """Gate every acting operation.
+
+    Layer order (ToS is the ceiling — nothing below can override it):
+      1. Platform Terms of Service (platforms/<name>/tos_rules.yaml)
+      2. Quiet hours + rate limits
+    Mission scope / autonomy is checked by the caller after this gate.
+    """
+    tos_class = tos_mod.CLI_OP_TO_CLASS.get(action)
+    if tos_class is None:
+        raise Refused(f"no ToS classification for action {action!r}; refusing by default")
+    try:
+        tos_mod.check_tos(platform, tos_class)
+    except tos_mod.ToSRefusal as e:
+        log_refusal(action, platform, "", f"ToS: {e}")
+        raise
     if in_quiet_hours():
         raise Refused("quiet hours active: acting operations are paused")
     check_rate_limit(platform)
@@ -326,6 +341,11 @@ def cmd_watch(args):
                 f"unknown watcher type {args.type!r} (see: {', '.join(sorted(REGISTRY))})")
         check_platform(args.platform)
         acct = resolve_account(args.account)
+        try:
+            tos_mod.check_tos(args.platform, "automated_data_collection")
+        except tos_mod.ToSRefusal as e:
+            log_refusal("watch", args.platform, args.type, f"ToS: {e}")
+            raise
         config = parse_kv(args.set)
         cls = REGISTRY[args.type]
         probe = cls("probe", args.platform, acct["username"], config,
@@ -371,6 +391,11 @@ def cmd_watch(args):
         rec = registry.get(args.id)
         if not rec:
             raise UsageError(f"unknown watcher {args.id!r}")
+        try:
+            tos_mod.check_tos(rec["platform"], "automated_data_collection")
+        except tos_mod.ToSRefusal as e:
+            log_refusal("watch", rec["platform"], rec["id"], f"ToS: {e}")
+            raise
         if not rec.get("enabled"):
             raise UsageError(f"watcher {args.id} is stopped")
         cls = REGISTRY[rec["type"]]
@@ -878,6 +903,12 @@ def cmd_heartbeat(args):
                 w = cls(rec["id"], rec["platform"], rec["account"], rec["config"],
                         home_dir(), rec.get("fixture"))
                 try:
+                    tos_mod.check_tos(rec["platform"], "automated_data_collection")
+                except tos_mod.ToSRefusal as e:
+                    log_refusal("watch", rec["platform"], rec["id"], f"ToS: {e}")
+                    print(f"[tick {tick}] watcher {wid}: REFUSED (ToS): {e}")
+                    continue
+                try:
                     hb.watch_run(cfg, rec["id"], w.check)
                     print(f"[tick {tick}] watcher {wid}: poll ok")
                 except Exception as e:
@@ -916,6 +947,14 @@ def cmd_doctor(args):
             check(f"platform adapter: {p}", True)
         except Exception as e:
             check(f"platform adapter: {p}", False, str(e))
+    try:
+        n = 0
+        for p in SUPPORTED_PLATFORMS:
+            tos_mod.load_rules(p)
+            n += 1
+        check("ToS rules parse", True, f"{n} platforms")
+    except Exception as e:
+        check("ToS rules parse", False, str(e))
     check("watcher types", True, ", ".join(sorted(REGISTRY)))
     fx = os.path.join(REPO_ROOT, "watchers", "fixtures")
     nfx = len([f for f in os.listdir(fx) if f.endswith(".json")]) if os.path.isdir(fx) else 0
@@ -1103,6 +1142,9 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         args.func(args)
+    except tos_mod.ToSRefusal as e:
+        print(f"REFUSED (ToS): {e}", file=sys.stderr)
+        return 2
     except Refused as e:
         print(f"REFUSED (policy): {e}", file=sys.stderr)
         return 2

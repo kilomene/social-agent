@@ -41,3 +41,36 @@ itself never stores credentials and never calls private endpoints directly.
 
 See `policy/policy.yaml` (`rate_limits`). The CLI refuses acting operations
 past the per-hour/per-day caps regardless of platform headroom.
+
+## Terms of Service compliance (per-platform)
+
+Each platform ships `platforms/<name>/terms.md` (human-readable rules with
+official source links and a last-checked date) and `platforms/<name>/tos_rules.yaml`
+(machine-readable: `prohibited` / `restricted` / `allowed` per action class,
+enforced by `platforms/tos.py`).
+
+The ToS layer runs **first** — above missions, autonomy, approvals, quiet
+hours, and rate limits. A `prohibited` entry refuses the action outright
+(exit 2, logged to `refusals.jsonl`); a `restricted` entry proceeds but prints
+the platform's constraint as an advisory. No mission or approval can override
+a prohibition.
+
+Key platform-specific outcomes (see each `terms.md` for sources):
+
+- **X is the strict case.** X's developer guidelines require automation only
+  through the official X API and prohibit non-API automation. This tool is
+  browser-driven, so automated likes, comments, follows, reposts, DMs, and
+  browser-based data collection are **prohibited** on X. The sanctioned path
+  for automation on X is the official API — stated plainly, not worked around.
+- **Reddit:** automated upvoting is vote manipulation — **prohibited**. Bots
+  are otherwise welcome where non-spammy and subreddit-rule-compliant.
+- **YouTube:** automated outreach is spam (no creator DM feature) —
+  **prohibited**; fake engagement of any kind is banned.
+- **TikTok / Instagram / Facebook:** automation without the platform's
+  permission is prohibited in the literal terms; this tool's posture is
+  human-directed, low-volume, own-account operation with the constraint shown
+  on every guarded call. Bulk/spammy automation stays refused by the tool's
+  own anti-spam guards.
+
+These summaries are not legal advice; the official documents govern, and they
+change over time — each file records its last-checked date.
