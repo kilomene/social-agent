@@ -54,12 +54,37 @@ def test_cli_op_mapping_covers_engage_ops():
         assert op in tos.CLI_OP_TO_CLASS, op
 
 
-def test_cli_refuses_prohibited_action(home):
+def _policy_without_ack_risk(tmp_path):
+    """Repo policy.yaml with the tos.acknowledged_risk opt-in stripped.
+
+    The live repo policy opts x in (owner's explicit 2026-09-25 choice);
+    tests of the fail-closed default need a policy without it."""
+    src = os.path.join(REPO, "policy", "policy.yaml")
+    text = open(src, encoding="utf-8").read().replace("    - x\n", "")
+    p = tmp_path / "policy-noack.yaml"
+    p.write_text(text, encoding="utf-8")
+    return str(p)
+
+
+def test_cli_refuses_prohibited_action(home, tmp_path):
+    add_account(home, platform="x", username="xt", label="main")
+    r = cli("engage", "like", "--platform", "x", "--account", "main",
+            "--target", "v1", home=home,
+            policy=_policy_without_ack_risk(tmp_path))
+    assert r.returncode == 2
+    assert "ToS" in r.stderr
+
+
+def test_cli_acknowledged_risk_downgrades_prohibited_to_restricted(home):
+    # The repo's live policy.yaml opts x into tos.acknowledged_risk
+    # (owner's explicit 2026-09-25 opt-in): the prohibition downgrades to
+    # restricted with a loud logged advisory instead of refusing.
     add_account(home, platform="x", username="xt", label="main")
     r = cli("engage", "like", "--platform", "x", "--account", "main",
             "--target", "v1", home=home)
-    assert r.returncode == 2
-    assert "ToS" in r.stderr
+    assert r.returncode == 0
+    assert "ACKNOWLEDGED-RISK ADVISORY" in r.stderr
+    assert "DRY-RUN proposal" in r.stdout
 
 
 def test_cli_refuses_prohibited_watcher(home):

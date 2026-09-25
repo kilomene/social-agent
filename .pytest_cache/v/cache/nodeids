@@ -288,6 +288,7 @@
   "tests/test_threads.py::test_threads_tos_rules",
   "tests/test_threads.py::test_threads_watchers_register_with_engine",
   "tests/test_tos.py::test_all_platforms_have_valid_rules",
+  "tests/test_tos.py::test_cli_acknowledged_risk_downgrades_prohibited_to_restricted",
   "tests/test_tos.py::test_cli_op_mapping_covers_engage_ops",
   "tests/test_tos.py::test_cli_refuses_prohibited_action",
   "tests/test_tos.py::test_cli_refuses_prohibited_watcher",

@@ -185,18 +185,15 @@ recovery:
   auto_suggest: true
   note: "Platform-acting intents are never auto-executed after a crash; they need human re-approval. Safe local work (renders) may re-execute with `recover --execute`."
 
-# ToS acknowledged risk: EMPTY by default. The ToS layer fails closed on
-# prohibited actions (e.g. X engagement performed through a browser rather
-# than an API, which X's terms restrict to API-only automation). If the user
-# explicitly opts a platform in here, a prohibition DOWNGRADEs to restricted
-# with a loud, logged advisory — the risk is the user's informed choice, and
-# the agent records it. Without the acknowledgment, prohibitions stay
-# fail-closed.
+# ToS acknowledged risk: the user explicitly opted X in on 2026-09-25
+# ("you own all the accounts ... everything run autonomously" — the three
+# accounts were created FOR the agent, not as personal accounts). A
+# prohibition on an opted-in platform DOWNGRADEs to restricted with a loud,
+# logged advisory stating the plain suspension risk. Prohibitions stay
+# fail-closed on every platform NOT listed here.
 tos:
-  # To opt in, add block-style entries, e.g.:
-  #   acknowledged_risk:
-  #     - x
   acknowledged_risk:
+    - x
 
 # Hands execution (no APIs, no repo-driven browser). Approving a proposal
 # issues a machine-readable execution ticket (issued -> claimed ->
