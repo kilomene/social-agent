@@ -43,9 +43,10 @@ only acting pauses.
   repository or in its state directory.
 - `accounts add` stores only the platform, username/handle, and a label —
   never secrets.
-- Real sign-in happens in the user's own browser session (or the platform's
-  official OAuth flow), outside this tool. The CLI's `doctor` command verifies
-  the environment; it never asks for a password.
+- Real sign-in happens in the user's own browser session, outside this tool.
+  The CLI's `doctor` command verifies the environment; it never asks for a
+  password. There is no OAuth flow in this tool and no API backend —
+  the browser is the only way in.
 
 ## 6. Honest automation
 
@@ -444,9 +445,9 @@ bypass. Every primitive is journaled with an idempotency key, so a
 crashed browser session resumes instead of repeating a post. Per-platform
 recipes live in `platforms/browser/` (selectors, login notes, quirks);
 **selectors rot** — they are a maintenance surface with a re-check
-discipline (`LAST_VERIFIED` per recipe). Backend selection:
-`platforms.<name>.backend: browser` (default) or `api` (config option;
-nothing in this repo requires keys).
+discipline (`LAST_VERIFIED` per recipe). There is no backend switch: the
+browser is the only backend — no APIs, no API keys, no config option to
+change that.
 
 **ToS acknowledged risk — handled honestly.** The ToS layer still fails
 closed by default: e.g. X browser-driven likes/comments/follows/DMs are

@@ -2,14 +2,15 @@
 
 `act(home, platform, account_label, action, params, policy, ...)`:
 
-  1. checks the configured backend: policy `platforms.<name>.backend`
-     (default "browser"; "api" remains a config option but nothing
-     requires keys — and there are no API integrations in this repo);
-  2. enforces the ToS layer FIRST (platforms/tos.py), including the
+  The browser is the ONLY backend — there is no API backend, no API
+  integrations, no API keys, and no config switch. Every platform is
+  driven through the account's persistent browser profile.
+
+  1. enforces the ToS layer FIRST (platforms/tos.py), including the
      `tos.acknowledged_risk` opt-in downgrade with its loud advisory;
-  3. opens the account's persistent browser profile
+  2. opens the account's persistent browser profile
      (`browser/session.py`);
-  4. runs the recipe's primitive steps, each journaled with an
+  3. runs the recipe's primitive steps, each journaled with an
      idempotency key, human-paced, and rate-limited
      (`browser/primitives.py`).
 
@@ -34,12 +35,6 @@ ACTION_TO_TOS_CLASS = {
 }
 
 
-def backend_for(policy, platform):
-    """Configured backend for a platform: 'browser' (default) or 'api'."""
-    plats = (policy or {}).get("platforms") or {}
-    return (plats.get(platform) or {}).get("backend", "browser")
-
-
 def act(home, platform, account_label, action, params=None, policy=None,
         driver=None, simulate=False, headed=False, evidence=True):
     """Execute one browser-backed platform action. Returns a result dict.
@@ -55,10 +50,6 @@ def act(home, platform, account_label, action, params=None, policy=None,
         raise ValueError(
             f"{platform} recipe has no action {action!r}"
             f" (available: {sorted(recipe.ACTIONS)})")
-    if backend_for(policy, platform) != "browser":
-        raise RuntimeError(
-            f"platforms.{platform}.backend is not 'browser' — refusing to"
-            " run the browser backend under a different backend setting")
     # ToS FIRST — fail closed unless the user acknowledged the risk.
     tos_class = tos_mod.CLI_OP_TO_CLASS.get(
         ACTION_TO_TOS_CLASS.get(action, action))

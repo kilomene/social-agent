@@ -208,19 +208,5 @@ browser:
     end: "23:00"
   note: "Set active_hours.enabled: true to confine browser actions to a daily window."
 
-# Backend selection per platform: "browser" (default — persistent browser
-# automation, no keys) or "api" (config option; nothing in this repo
-# requires or uses API keys).
-platforms:
-  tiktok:
-    backend: browser
-  x:
-    backend: browser
-  instagram:
-    backend: browser
-  facebook:
-    backend: browser
-  youtube:
-    backend: browser
-  reddit:
-    backend: browser
+# Per-platform notes. The browser is the only backend — there is no
+# backend config key, no API backend, no API keys anywhere in this repo.

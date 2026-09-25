@@ -38,8 +38,9 @@ manipulation, or bulk data extraction outside the sanctioned paths.
   and human-approved**. Bot-operated accounts should identify as bots.
 - Subscribe to subreddits and crosspost where welcome (genuine, low-volume).
 - Low-volume, read-only monitoring of the user's own account activity, with
-  the advisory shown on every guarded call. Bulk collection belongs on the
-  Data API under its terms.
+  the advisory shown on every guarded call. This tool uses no Reddit API —
+  it is browser-only by the account owner's explicit order; bulk collection
+  is simply not something this tool does.
 
 ## What this tool must never do on Reddit
 

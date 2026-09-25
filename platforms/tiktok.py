@@ -1,4 +1,8 @@
-"""TikTok adapter spec."""
+"""TikTok adapter spec — browser-only.
+
+social-agent drives TikTok exclusively through the account's persistent
+browser session. There is no API client, no API key, and no API backend.
+"""
 
 from .base import AdapterSpec
 
@@ -16,18 +20,14 @@ ADAPTER = AdapterSpec(
     ],
     postable=[
         "Upload video (via tiktok.com/upload in browser)",
-        "Content Posting API (for approved developer apps: video.upload / video.publish scopes)",
-        "Like, comment, follow, share, save",
+        "Like, comment, follow, share, save (browser)",
     ],
     not_possible=[
-        "No public write API for ordinary personal accounts; posting is browser-driven unless you register an approved app.",
         "DM sending at scale is throttled by TikTok and may trigger verification.",
         "Private/friends-only content is not visible without that relationship.",
     ],
     rate_note="Keep acting well under ~10 actions/hour; new accounts are throttled harder.",
     docs=[
-        "https://developers.tiktok.com/doc/login-kit-web/",
-        "https://developers.tiktok.com/doc/content-posting-api-get-started",
-        "https://developers.tiktok.com/doc/display-api-overview",
+        "https://www.tiktok.com/legal/page/us/terms-of-service/en",
     ],
 )

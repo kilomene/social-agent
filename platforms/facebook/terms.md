@@ -12,7 +12,6 @@ Last checked: 2026-09-25
 - Facebook Terms of Service: https://www.facebook.com/terms.php
 - Meta developer docs — automated data collection:
   https://developers.facebook.com/docs/development/terms-and-policies/automated-data-collection/?locale=en_US
-- Meta Platform Terms: https://developers.facebook.com/terms/dfc_platform_terms/
 
 ## What Facebook's terms say (automation-relevant)
 
@@ -33,7 +32,11 @@ Last checked: 2026-09-25
 - Draft posts for human approval (the tool never publishes by itself).
 - Low-volume, read-only monitoring of the user's own account activity, with
   the advisory shown on every guarded call. Note this is not affirmatively
-  permitted — the sanctioned path for programmatic access is the official API.
+  permitted by Meta's terms. This tool never uses Meta's APIs — by the
+  account owner's explicit order it is browser-only; Meta's terms treat
+  automated collection as requiring prior permission, and the
+  `tos.acknowledged_risk` opt-in records the owner's informed acceptance
+  of the suspension risk.
 
 ## What this tool must never do on Facebook
 

@@ -1,11 +1,12 @@
 """Platform adapter interface.
 
 An adapter describes one social platform: what can be *read* (via browser
-automation or official API), what can be *posted*, how auth works, and the
-rate limits social-agent enforces. Adapters are descriptive + fixture-based:
-they never hold credentials and never perform live network calls themselves.
-Live reading/posting happens in a real browser session driven by the user's
-agent; the adapter tells that agent exactly what is possible.
+automation), what can be *posted*, how auth works, and the rate limits
+social-agent enforces. There is no API backend anywhere in this repo —
+adapters are descriptive + fixture-based: they never hold credentials and
+never perform live network calls themselves. Live reading/posting happens
+in a real browser session driven by the user's agent; the adapter tells
+that agent exactly what is possible.
 """
 
 SUPPORTED_PLATFORMS = ["tiktok", "x", "instagram", "facebook", "youtube", "reddit"]

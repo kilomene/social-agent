@@ -1,30 +1,36 @@
-"""X (Twitter) adapter spec."""
+"""X (Twitter) adapter spec — browser-only.
+
+social-agent drives X exclusively through the account's persistent
+browser session. There is no API client, no API key, and no API backend.
+"""
 
 from .base import AdapterSpec
 
 ADAPTER = AdapterSpec(
     name="x",
     display="X (Twitter)",
-    auth="Browser session sign-in, or official X API v2 with OAuth 2.0 (user context). "
-         "API tiers are paid; free tier is read/write-limited.",
+    auth="Browser session sign-in in the persistent profile "
+         "(headed first login; the human signs in). No credentials stored "
+         "by social-agent.",
     readable=[
-        "Home timeline, search, hashtags, lists",
+        "Home timeline, search, hashtags, lists (browser scroll)",
         "Profiles, follower counts, tweets, replies",
         "Notifications (mentions, likes, reposts, follows)",
-        "DMs (via API with elevated access, or browser)",
+        "DMs (browser)",
     ],
     postable=[
-        "Post tweets, reply, repost, quote, like, bookmark (browser or API)",
-        "DMs via API (user context) or browser",
+        "Post tweets, reply, repost, quote, like, bookmark (browser)",
+        "DMs via browser",
     ],
     not_possible=[
-        "Free API tier cannot do meaningful volume; check current pricing.",
-        "Scraping at scale violates the ToS; use the official API for bulk reads.",
-        "Polls/ads management need separate API products.",
+        "X's terms require API-only automation; browser-driven engagement "
+        "is prohibited by default and fails closed — it proceeds only with "
+        "the explicit tos.acknowledged_risk opt-in (suspension risk logged).",
+        "Polls/ads management are out of scope.",
     ],
-    rate_note="X enforces aggressive per-15-min windows on the API and behavioral limits in-app; stay conservative.",
+    rate_note="X enforces behavioral limits in-app; stay conservative — "
+              "low volume, human pacing.",
     docs=[
-        "https://docs.x.com/x-api/introduction",
-        "https://docs.x.com/x-api/posts/creation",
+        "https://help.x.com/en/rules-and-policies/xrules",
     ],
 )

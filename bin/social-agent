@@ -1885,7 +1885,7 @@ def cmd_browser(args):
     home = home_dir()
     if args.op == "status":
         print(f"engine: {'playwright' if BROWSER_OK else 'NOT INSTALLED (see browser/SETUP.md)'}")
-        print("backend default: browser (config: platforms.<name>.backend)")
+        print("backend: browser — the only backend (no APIs, no keys, no switch)")
         import os as _os
         adir = _os.path.join(home, "accounts")
         labels = sorted(_os.listdir(adir)) if _os.path.isdir(adir) else []

@@ -1,30 +1,35 @@
-"""YouTube adapter spec."""
+"""YouTube adapter spec — browser-only.
+
+social-agent drives YouTube exclusively through the account's persistent
+browser session. There is no API client, no API key, and no API backend.
+"""
 
 from .base import AdapterSpec
 
 ADAPTER = AdapterSpec(
     name="youtube",
     display="YouTube",
-    auth="Browser session sign-in, or official YouTube Data API v3 with OAuth 2.0 "
-         "(quota-based, 10,000 units/day default).",
+    auth="Browser session sign-in in the persistent profile "
+         "(headed first login; the human signs in). No credentials stored "
+         "by social-agent.",
     readable=[
-        "Subscriptions feed, search, trending",
+        "Subscriptions feed, search, trending (browser)",
         "Channel pages: uploads, subscriber counts, video metadata",
-        "Video comments (API commentThreads.list or browser)",
+        "Video comments (browser)",
         "Notifications (browser)",
     ],
     postable=[
-        "Upload videos via API (videos.insert, quota-expensive) or browser (YouTube Studio)",
-        "Comment, reply, like (API with OAuth or browser)",
+        "Upload videos via browser (YouTube Studio)",
+        "Comment, reply, like (browser)",
     ],
     not_possible=[
-        "Data API default quota is small; comment-heavy polling burns it fast.",
-        "No API for Shorts-specific creation flows; use Studio/browser.",
+        "Nothing that artificially inflates views, likes, comments, or "
+        "subscribers — refused (fake engagement).",
         "Community posts need channel eligibility.",
     ],
-    rate_note="Respect the 10k units/day default quota; cache aggressively and poll slowly.",
+    rate_note="Keep actions low-volume and human-paced; aggressive "
+              "automation risks the channel.",
     docs=[
-        "https://developers.google.com/youtube/v3",
-        "https://developers.google.com/youtube/v3/docs/commentThreads/list",
+        "https://www.youtube.com/t/terms",
     ],
 )

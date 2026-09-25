@@ -10,13 +10,11 @@ actions:
     basis: "Facebook's Terms prohibit accessing or collecting data using automated means without prior permission. Genuine, human-directed, low-volume likes are authentic engagement; bulk or scripted liking is not."
     sources:
       - https://www.facebook.com/terms.php
-      - https://developers.facebook.com/terms/dfc_platform_terms/
   automated_comments:
     status: restricted
     basis: "Automated means without prior permission are prohibited, and misleading or fraudulent behavior is banned. Human-reviewed, genuine replies are authentic; automated mass commenting is not."
     sources:
       - https://www.facebook.com/terms.php
-      - https://developers.facebook.com/terms/dfc_platform_terms/
   automated_follows:
     status: restricted
     basis: "Automated means without prior permission are prohibited. Genuine follows are fine; automated follow/unfollow churn is not."
@@ -39,7 +37,7 @@ actions:
       - https://www.facebook.com/terms.php
   automated_data_collection:
     status: restricted
-    basis: "Facebook's Terms (section 3.2.3) prohibit accessing or collecting data from its products using automated means without prior permission, and Meta's developer docs state the Platform APIs are the only allowable means of programmatic access. Low-volume, own-account, read-only monitoring is not affirmatively permitted; the sanctioned path is the official API."
+    basis: "Facebook's Terms (section 3.2.3) prohibit accessing or collecting data from its products using automated means without prior permission, and Meta's developer docs state the Platform APIs are the only allowable means of programmatic access. Low-volume, own-account, read-only monitoring is not affirmatively permitted; this tool never uses Meta's APIs — it is browser-only by the owner's explicit order, with the tos.acknowledged_risk opt-in recording informed acceptance of the risk."
     sources:
       - https://www.facebook.com/terms.php
       - https://developers.facebook.com/docs/development/terms-and-policies/automated-data-collection/?locale=en_US

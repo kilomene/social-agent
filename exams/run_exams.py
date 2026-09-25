@@ -1397,16 +1397,17 @@ def exam_56_crash_recovery_skip_and_resume():
 
 
 def write_browser_policy(path, ack=()):
-    """Minimal policy for browser exams: generous rate limits, ack list."""
+    """Minimal policy for browser exams: generous rate limits, ack list.
+
+    Note: there is no `backend` config key — the browser is the only
+    backend. Nothing here selects or mentions an API.
+    """
     lines = ["version: 1", "defaults:", '  mode: "propose"',
              "rate_limits:", "  default:",
              "    actions_per_hour: 1000", "    actions_per_day: 10000",
              "quiet_hours:", "  enabled: false",
              "browser:", "  active_hours:", "    enabled: false",
-             "platforms:"]
-    for p in ("tiktok", "x", "instagram", "facebook", "youtube", "reddit"):
-        lines += [f"  {p}:", "    backend: browser"]
-    lines += ["tos:", "  acknowledged_risk:"]
+             "tos:", "  acknowledged_risk:"]
     for p in ack:
         lines.append(f"    - {p}")
     with open(path, "w", encoding="utf-8") as fh:
@@ -1530,6 +1531,53 @@ def exam_61_browser_challenge_pauses_with_notification():
     return ex
 
 
+def exam_62_browser_only_no_api_surface():
+    ex = Exam("exam-62", "X like executes via the browser backend; no API credential anywhere")
+    home = fresh_home()
+    pol = write_browser_policy(os.path.join(home, "policy.yaml"), ack=["x"])
+    run(home, pol, "browser", "login", "--account", "main",
+        "--platform", "x", "--simulate")
+    r = run(home, pol, "browser", "act", "--account", "main",
+            "--platform", "x", "--action", "like",
+            "--target", "https://x.com/s/62", "--simulate")
+    ex.check("X like proceeds via browser (exit 0)", r.returncode == 0,
+             (r.stderr.strip() + r.stdout.strip())[:120])
+    ex.check("steps executed through the browser backend",
+             "browser act like [x/main]: OK" in r.stdout,
+             r.stdout.strip()[:120])
+    # no API credential exists anywhere in the state dir
+    cred_pat = re.compile(r"(?i)api[_-]?key|api[_-]?secret|client[_-]?secret|"
+                          r"bearer\s+ey|oauth.*token")
+    bad = []
+    for dp, dn, fn in os.walk(home):
+        if "__pycache__" in dn:
+            dn.remove("__pycache__")
+        for f in fn:
+            p = os.path.join(dp, f)
+            try:
+                t = open(p, encoding="utf-8", errors="strict").read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if cred_pat.search(t):
+                bad.append(os.path.relpath(p, home))
+    ex.check("no API credential material in state", not bad, str(bad)[:100])
+    # the backend switch itself is gone from the shipped code
+    sys.path.insert(0, REPO)
+    from platforms.browser import backend as _backend
+    ex.check("no backend_for() selector exists",
+             not hasattr(_backend, "backend_for"))
+    ex.check("act() takes no backend argument",
+             "backend" not in _backend.act.__code__.co_varnames)
+    src = open(os.path.join(REPO, "platforms", "browser",
+                            "backend.py")).read()
+    ex.check("backend.py declares browser-only, no api option",
+             "no API backend" in src and
+             not re.search(r"backend\s*:\s*[\"']?api|\"api\"\s*=\s*\"backend\"",
+                           src, re.I),
+             "browser-only denial present")
+    return ex
+
+
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
          exam_3_rate_limit_enforced,
@@ -1590,7 +1638,8 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_58_browser_x_proceeds_with_ack,
          exam_59_browser_profile_persists,
          exam_60_browser_like_uses_rate_limits,
-         exam_61_browser_challenge_pauses_with_notification]
+         exam_61_browser_challenge_pauses_with_notification,
+         exam_62_browser_only_no_api_surface]
 
 
 def main():

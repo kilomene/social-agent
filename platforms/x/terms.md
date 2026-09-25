@@ -29,22 +29,25 @@ Last checked: 2026-09-25
 
 ## Honest gap for this tool
 
-This tool is **browser-driven**, not API-driven. Under a literal reading of
-X's terms, several of its automation categories are simply not permitted on
-X (see below). The sanctioned path for automation on X is the official X API.
-The tool states this plainly rather than pretending browser automation is
+This tool is **browser-driven**, not API-driven — by the account owner's
+explicit order it uses no APIs and no API keys on any platform. Under a
+literal reading of X's terms, several of its automation categories are simply
+not permitted on X (see below); X's developer guidelines designate the
+official X API as their sanctioned path, which this tool does not use. The
+tool states this plainly rather than pretending browser automation is
 covered.
 
 ## What this tool may do on X
 
 - Draft posts for human approval (the tool never publishes by itself).
   Human-directed posting that follows the Automation Rules is the only
-  write-adjacent activity permitted here; automated publishing belongs on the
-  official API.
+  write-adjacent activity permitted here.
 - Propose profile changes for explicit human approval.
 - Low-volume, read-only reading of the user's own account, with an advisory
-  shown on every guarded call (not affirmatively permitted; the API is the
-  sanctioned path).
+  shown on every guarded call (not affirmatively permitted by X's terms).
+  Anything beyond this proceeds only under the explicit
+  `tos.acknowledged_risk: [x]` opt-in — the owner's informed acceptance of
+  the suspension risk, logged per action.
 
 ## What this tool must never do on X
 

@@ -4,7 +4,9 @@
 # NOTE: X's developer guidelines require automation ONLY through the official X
 # API and prohibit non-API automation (browser scripting, scraping). This tool
 # is browser-driven, so several automation categories are outright prohibited
-# here. The sanctioned path for automation on X is the official API.
+# here. X's guidelines designate the official X API as their sanctioned
+# path; this tool does not use it — it is browser-only by the owner's
+# explicit order, with tos.acknowledged_risk as the informed opt-in.
 platform: x
 display_name: X
 last_checked: 2026-09-25
@@ -44,7 +46,7 @@ actions:
       - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
   automated_posting:
     status: restricted
-    basis: "Write actions must follow X's Automation Rules: no spam, no bulk or aggressive behavior, bot accounts must disclose their bot identity. Automated publishing belongs on the official X API; this tool only drafts posts and records explicit human approval, never publishing by itself."
+    basis: "Write actions must follow X's Automation Rules: no spam, no bulk or aggressive behavior, bot accounts must disclose their bot identity. This tool is browser-only by the owner's explicit order and never uses the X API; it only drafts posts and records explicit human approval, never publishing by itself."
     sources:
       - https://x.com/en/tos
       - https://github.com/xdevplatform/docs/blob/HEAD/developer-terms/policy.mdx
@@ -61,7 +63,7 @@ actions:
       - https://x.com/en/tos
   automated_reading:
     status: restricted
-    basis: "Keep automated reading low-volume and limited to the user's own account. It is not affirmatively permitted outside published interfaces; the sanctioned path for programmatic reads is the official X API."
+    basis: "Keep automated reading low-volume and limited to the user's own account. It is not affirmatively permitted outside published interfaces; this tool reads only through the logged-in browser session, low-volume and own-account."
     sources:
       - https://x.com/en/tos
   comment_moderation:

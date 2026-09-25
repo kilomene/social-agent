@@ -10,7 +10,6 @@ actions:
     basis: "YouTube's Terms prohibit fake engagement and anything that artificially increases engagement via automatic systems. Genuine, human-directed likes reflect authentic intent; automated liking is not."
     sources:
       - https://www.youtube.com/t/terms?gl=DE
-      - https://developers.google.com/youtube/terms/api-services-terms-of-service
   automated_comments:
     status: restricted
     basis: "Spam and unsolicited promotional content are prohibited. Human-reviewed, genuine comments are authentic; automated mass commenting is spam."
@@ -33,17 +32,14 @@ actions:
       - https://www.youtube.com/t/terms?gl=DE
   automated_posting:
     status: restricted
-    basis: "Accessing the service via automated means (robots, scrapers) is prohibited except for public search engines or with prior written permission. Uploads and publishing belong on the official YouTube API with user OAuth consent; this tool only drafts and records explicit human approval, never publishing by itself."
+    basis: "Accessing the service via automated means (robots, scrapers) is prohibited except for public search engines or with prior written permission. This tool is browser-only and never uses the YouTube API; actual uploads are performed through the persistent browser session in YouTube Studio with the user's logged-in account. It only drafts metadata and records explicit human approval, never publishing by itself."
     sources:
       - https://www.youtube.com/t/terms?gl=DE
-      - https://developers.google.com/youtube/terms/api-services-terms-of-service
-      - https://developers.google.com/youtube/terms/developer-policies
   automated_data_collection:
     status: restricted
     basis: "YouTube's Terms prohibit accessing the service through automated means (robots, botnets, scrapers) other than public search engines, unless given prior written permission. Low-volume, own-account, read-only monitoring is not affirmatively permitted; the sanctioned path for programmatic access is the YouTube API."
     sources:
       - https://www.youtube.com/t/terms?gl=DE
-      - https://developers.google.com/youtube/terms/api-services-terms-of-service
   profile_modification:
     status: restricted
     basis: "Account changes must be human-directed. This tool only proposes profile changes; they require explicit human approval and are applied by the user."

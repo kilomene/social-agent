@@ -38,7 +38,7 @@ actions:
       - https://redditinc.com/policies/user-agreement-july-1-2026
   automated_data_collection:
     status: restricted
-    basis: "Reddit's User Agreement prohibits accessing, searching, or collecting data by automated means except as permitted in the Terms; scraping without Reddit's prior written consent is prohibited, while crawling per robots.txt is conditionally permitted. Bulk programmatic access belongs on the Data API under the Data API Terms (which also prohibit AI-training use without permission). Keep browser-based collection low-volume and own-account."
+    basis: "Reddit's User Agreement prohibits accessing, searching, or collecting data by automated means except as permitted in the Terms; scraping without Reddit's prior written consent is prohibited, while crawling per robots.txt is conditionally permitted. This tool uses no Reddit API and is browser-only by the owner's explicit order. Keep browser-based collection low-volume and own-account."
     sources:
       - https://redditinc.com/policies/user-agreement-july-1-2026
       - https://redditinc.com/policies/data-api-terms
@@ -49,7 +49,7 @@ actions:
       - https://redditinc.com/policies/user-agreement-july-1-2026
   automated_reading:
     status: restricted
-    basis: "Keep automated reading low-volume and limited to the user's own account. Bulk collection belongs on the Data API under its terms."
+    basis: "Keep automated reading low-volume and limited to the user's own account. Bulk collection is not something this tool does."
     sources:
       - https://redditinc.com/policies/user-agreement-july-1-2026
       - https://redditinc.com/policies/data-api-terms

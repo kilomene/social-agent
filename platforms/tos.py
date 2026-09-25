@@ -11,8 +11,9 @@ Each platform ships platforms/<name>/tos_rules.yaml with a status for every
 action class:
     prohibited  the platform's terms bar this automation category -> refused
                 (raises ToSRefusal; the CLI exits 2 and logs to refusals.jsonl)
-    restricted  the terms impose conditions (permission required, API-only,
-                no spam, low-volume, ...) -> the CLI proceeds but prints the
+    restricted  the terms impose conditions (permission required,
+                terms-reserved automation categories, no spam,
+                low-volume, ...) -> the CLI proceeds but prints the
                 condition as an advisory so the operator sees the constraint
     allowed     no relevant restriction found in the platform's terms
 

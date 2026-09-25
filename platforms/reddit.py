@@ -1,30 +1,36 @@
-"""Reddit adapter spec."""
+"""Reddit adapter spec — browser-only.
+
+social-agent drives Reddit exclusively through the account's persistent
+browser session. There is no API client, no API key, and no API backend.
+"""
 
 from .base import AdapterSpec
 
 ADAPTER = AdapterSpec(
     name="reddit",
     display="Reddit",
-    auth="Browser session sign-in, or official Reddit API with OAuth 2.0 "
-         "(script/app type; free tier has rate limits).",
+    auth="Browser session sign-in in the persistent profile "
+         "(headed first login; the human signs in). No credentials stored "
+         "by social-agent.",
     readable=[
-        "Subreddits: hot/new/top listings, search",
+        "Subreddits: hot/new/top listings, search (browser)",
         "Posts, comment trees, user profiles, karma",
-        "Inbox: messages, comment replies, mentions (API or browser)",
+        "Inbox: messages, comment replies, mentions (browser)",
     ],
     postable=[
-        "Submit posts/comments via API (OAuth) or browser",
-        "Upvote, save, follow users/subreddits",
-        "DMs (chat) via browser; API chat support is limited",
+        "Submit posts/comments via browser",
+        "Save, follow users/subreddits (browser)",
+        "DMs (chat) via browser",
     ],
     not_possible=[
-        "API rate limits are strict for free apps (60 req/min); poll slowly.",
+        "Automated upvoting/downvoting is refused by the CLI "
+        "(vote manipulation — ToS prohibition).",
         "Many subreddits require karma/age minimums — automation gets filtered.",
         "Mod actions need moderator permissions.",
     ],
-    rate_note="60 requests/minute on the free API tier; browser polling should be gentler still.",
+    rate_note="Poll gently and keep actions low-volume; Reddit rate-limits "
+              "aggressive behavior.",
     docs=[
-        "https://www.reddit.com/dev/api/",
-        "https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-API-Terms",
+        "https://redditinc.com/policies/user-agreement-july-1-2026",
     ],
 )

@@ -327,7 +327,8 @@ missions.py / autonomy.py
 heartbeat/              protocol-compatible ping client (stdlib); heartbeat.yaml config
 platforms/              per-platform adapter specs + capabilities.md matrix
 policy/                 guardrails.md (human) + policy.yaml (machine, parsed by yaml_lite.py)
-catalogs/               curated tools / schedulers / analytics / official APIs (38 links, verified)
+catalogs/               curated tools / schedulers / analytics links (browser-only;
+                        no API catalog — removed per the owner's explicit order)
 skills/social-agent/    SKILL.md so any agent can install and use this
 tests/                  pytest suite (CLI e2e, watcher units, policy enforcement)
 exams/                  scenario exams, all recorded in RESULTS.md
@@ -380,15 +381,19 @@ Read `policy/guardrails.md`. In short:
   gates, and logs.
 - **No streaming.** Watchers poll on an interval you choose; there is no
   realtime push.
-- **Platform gaps are documented, not hidden** — see `platforms/capabilities.md`
-  (e.g. no public write API for TikTok/Instagram personal accounts, YouTube's
-  10k-units/day quota, X's paid API tiers).
+- **Browser-only by design.** There are no API clients, no API keys, and no
+  API backend anywhere in this repo — every platform is driven through the
+  account's persistent browser profile. There is no config switch to change
+  this; `platforms/<name>/backend` does not exist as a concept.
+- **Platform gaps are documented, not hidden** — see `platforms/capabilities.md`.
 - **X's terms prohibit non-API automation outright**, and this tool is
-  browser-driven: automated likes, comments, follows, reposts, DMs, and
-  browser-based data collection on X are refused by the CLI rather than
-  faked. The sanctioned path is X's official API.
+  browser-driven by the owner's explicit order: automated likes, comments,
+  follows, reposts, DMs, and browser-based data collection on X are refused
+  by the CLI rather than faked. They proceed only under the explicit
+  `tos.acknowledged_risk: [x]` opt-in, which records the owner's informed
+  acceptance of the suspension risk.
 - Fixture-based offline mode is for development and tests; live reading needs a
-  logged-in browser session or official API credentials you create yourself.
+  logged-in browser session.
 
 ## Tests & exams
 

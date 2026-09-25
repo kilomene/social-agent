@@ -1,29 +1,35 @@
-"""Facebook adapter spec."""
+"""Facebook adapter spec — browser-only.
+
+social-agent drives Facebook exclusively through the account's persistent
+browser session. There is no API client, no API key, and no API backend.
+"""
 
 from .base import AdapterSpec
 
 ADAPTER = AdapterSpec(
     name="facebook",
     display="Facebook",
-    auth="Browser session sign-in. Pages can use the official Graph API with a "
-         "Page access token (app review may be required).",
+    auth="Browser session sign-in in the persistent profile "
+         "(headed first login; the human signs in). No credentials stored "
+         "by social-agent.",
     readable=[
-        "News Feed, Pages, Groups (member-visible), Watch",
+        "News Feed, Pages, Groups (member-visible), Watch (browser)",
         "Page posts, comments, reactions, follower counts",
         "Page inbox / Messenger (Page scope)",
     ],
     postable=[
-        "Page posts, comments, replies via Graph API (Page token)",
-        "Personal profile actions are browser-driven only",
+        "Page posts, comments, replies (browser)",
+        "Personal profile actions (browser)",
     ],
     not_possible=[
-        "No official API for personal-profile posting — browser only.",
+        "Meta's terms restrict automated data collection; bulk or scripted "
+        "actions are refused — genuine, human-directed, low-volume only.",
         "Group content requires membership and respects group privacy.",
         "Marketplace automation is out of scope.",
     ],
-    rate_note="Graph API has per-app/per-page rate limits; browser actions on profiles are throttled behaviorally.",
+    rate_note="Keep browser actions on profiles low-volume with human-like "
+              "pauses; Meta throttles aggressively.",
     docs=[
-        "https://developers.facebook.com/docs/pages-api/",
-        "https://developers.facebook.com/docs/graph-api/",
+        "https://www.facebook.com/terms.php",
     ],
 )

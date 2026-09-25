@@ -9,10 +9,6 @@ Last checked: 2026-09-25
 ## Official sources
 
 - YouTube Terms of Service: https://www.youtube.com/t/terms?gl=DE
-- YouTube API Services Terms of Service:
-  https://developers.google.com/youtube/terms/api-services-terms-of-service
-- YouTube API Services Developer Policies:
-  https://developers.google.com/youtube/terms/developer-policies
 
 ## What YouTube's terms say (automation-relevant)
 
@@ -32,11 +28,12 @@ Last checked: 2026-09-25
   subscriptions) that reflects real interest. Every one of these still
   requires the user's explicit per-action approval.
 - Draft video/post metadata for human approval (the tool never publishes by
-  itself). Actual uploads belong on the official YouTube API with the user's
-  OAuth consent.
+  itself). Actual uploads are performed through the persistent browser
+  session in YouTube Studio with the user's logged-in account — no API keys,
+  no OAuth apps; this tool uses no YouTube API services.
 - Low-volume, read-only monitoring of the user's own channel activity, with
-  the advisory shown on every guarded call. The sanctioned path for
-  programmatic access is the YouTube API.
+  the advisory shown on every guarded call. Automated access is restricted
+  under YouTube's terms; the tool stays human-directed and low-volume.
 
 ## What this tool must never do on YouTube
 

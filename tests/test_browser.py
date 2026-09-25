@@ -15,10 +15,10 @@ from platforms.browser import backend as backend_mod
 
 
 def _policy(**over):
+    # No `backend` key: the browser is the only backend (no config switch).
     p = {"rate_limits": {"default": {"actions_per_hour": 1000,
                                      "actions_per_day": 10000}},
          "browser": {"active_hours": {"enabled": False}},
-         "platforms": {"x": {"backend": "browser"}},
          "tos": {"acknowledged_risk": []}}
     p.update(over)
     return p
