@@ -290,3 +290,83 @@ only acting pauses.
   watermark position, and the grade. Brand kits stamp the render — the
   account's look is a file in the repo, not a memory of what looked good
   last time.
+
+## 21. One approval queue for everything
+
+- Every acting proposal — engagement (`like`/`comment`/`follow`/`retweet`),
+  post publish, comment hides, reply drafts — lands in the **unified
+  approval queue** (`approvals/pending.json`). There is one list to review,
+  not five. `approvals list` (filter by `--status`), `approvals approve
+  --id`, `approvals reject --id --reason`.
+- **Approving executes the underlying action** (flips the domain record to
+  `approved`); **rejecting logs the reason** and flips it to `rejected`.
+  Approvals/rejections of domain-specific commands (`engage approve`,
+  `post approve`, `moderate approve`) route through this same queue — the
+  queue is the audit trail, not a duplicate.
+- Items that can't go forward right now are **never dropped**: a
+  rate-limited action becomes `rate_limited` (with `retry_at`), a crisis
+  parks pending items as `held`. Both are visible in the queue and need an
+  explicit human decision later.
+
+## 22. Approval policy is per action type — deny by default
+
+- `policy.yaml` → `approvals.per_type` maps each action type to
+  `require` (human approval) or `auto` (auto-approved). **Unlisted types
+  default to `require`.** The shipped default: everything `require` except
+  `hide_spam: auto` (pre-approved auto-hide rules only).
+- Turning a type to `auto` is a deliberate, auditable policy change — the
+  auto reason is recorded on the queue item (`mission 'm9'`, or
+  `approval policy (per_type: auto)`).
+- Autonomous missions and per-type `auto` can approve in-scope actions, but
+  they sit **below** the guard order: neither can override a ToS
+  prohibition or crisis mode.
+
+## 23. Rate limits are a central controller, per platform+action
+
+- One controller (`ratelimit/controller.py`) owns every bucket; every
+  acting command consults it. Buckets are keyed `(platform, action)` with
+  sliding hour/day windows and **per-action overrides** that fall back to
+  the platform section, then the default section.
+- When a bucket is exhausted the command **refuses with a retry time, queues
+  the action as `rate_limited`, and re-raises** (exit 2, "rate limit" in
+  stderr). The queue item carries `retry_at`; the action is retried after
+  that time, not silently discarded.
+- Consecutive denials widen the retry window exponentially (capped at 24h);
+  a successful action resets the denial count. `ratelimit status` shows
+  remaining quota per bucket; `ratelimit config` shows the effective limits.
+
+## 24. Crisis mode: the kill switch
+
+- `crisis on [--reason]` pauses **all** acting operations immediately and
+  parks pending/rate-limited queue items as `held`. Watchers keep
+  monitoring (read-only) — the agent can still see, it just can't touch.
+- Crisis sits in the guard order **above approvals, rate limits, and quiet
+  hours** (below ToS): no approval, auto-policy, or mission grant can act
+  while it's active. `crisis on` fires an urgent heartbeat alert and is
+  recorded locally.
+- **It never auto-resumes.** Only an explicit `crisis off` clears it — and
+  clearing re-pends held items for human approval; nothing auto-approves.
+- The crisis watcher's `auto_pause` is **opt-in only** (default off): a
+  false positive must never silence the account on its own.
+
+## 25. Notification listener: poll fast, route carefully
+
+- `listen` is a fast-poll loop over notification/comment/message watchers
+  (`--once` for a single pass). It's poll-based by design — see
+  `docs/listen-latency.md` for the honest latency expectations.
+- Routing: **question comments** → reply draft (gated by voice + identity
+  checks, with a safe generic fallback; never a refused draft reaching a
+  human unmarked) into the approval queue; **toxic/spam comments** → hide
+  proposal (auto-approved only under a pre-approved rule, like §17);
+  **DMs** → logged to the people DB and surfaced as a user notification;
+  **mentions/likes/follows** → recorded to the people DB.
+- **People memory** (`people/`) is per account: interaction counts with
+  weights (comment=3, like=1, dm=5, follow=4, mention=2), notes, tags,
+  sentiment history, conversation log. Sustained engagement auto-tags
+  `top-fan`; top-fan questions get a priority flag, and the tag boosts
+  interest scoring (+2). `people top/show/note/tag/untag` manage it.
+- Guard order reminder (the ceiling stack): **ToS > crisis > approvals >
+  rate limits > quiet hours.** Nothing below overrides anything above: a
+  pending approval can't fire under crisis, no auto-policy or mission can
+  override a ToS prohibition, and an exhausted bucket still refuses an
+  approved action until its retry time.

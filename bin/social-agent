@@ -44,7 +44,13 @@ from security import audit as security_audit_mod
 from learning import study as study_mod
 from identity import check as identity_mod
 from moderation import classify as mod_classify
+from moderation import propose as mod_propose
 from captions import generate as captions_mod
+from approvals import queue as approvals_queue
+from people import db as people_db
+from ratelimit import controller as rl_controller
+from crisis import mode as crisis_mod
+import listen as listen_mod
 from video import ffmpeg as vff
 from video import plans as vplans
 from video import fit as vfit
@@ -69,6 +75,15 @@ VERSION = "0.1.0"
 
 class Refused(Exception):
     """Policy refusal: rate limit hit, quiet hours, or missing approval."""
+
+
+class RateLimited(Refused):
+    """Rate-bucket denial. Carries retry_at (epoch seconds); the caller
+    must queue the action as rate_limited — never silently drop it."""
+
+    def __init__(self, message, retry_at=None):
+        super().__init__(message)
+        self.retry_at = retry_at
 
 
 class UsageError(Exception):
@@ -140,25 +155,16 @@ def get_policy():
     return _policy_cache
 
 
-def check_rate_limit(platform):
-    pol = get_policy()["rate_limits"]
-    lim = pol.get(platform, pol["default"])
-    now = time.time()
-    log = load_json("ratelimit.json", {}).get(platform, [])
-    log = [t for t in log if now - t < 86400]
-    hour = [t for t in log if now - t < 3600]
-    if len(hour) >= lim["actions_per_hour"]:
-        raise Refused(
-            f"rate limit: {platform} hourly cap ({lim['actions_per_hour']}) reached")
-    if len(log) >= lim["actions_per_day"]:
-        raise Refused(
-            f"rate limit: {platform} daily cap ({lim['actions_per_day']}) reached")
+def check_rate_limit(platform, action="any"):
+    """Legacy wrapper: delegates to the central controller."""
+    verdict = rl_controller.check(home_dir(), platform, action, get_policy())
+    if not verdict["allowed"]:
+        raise RateLimited(verdict["reason"], retry_at=verdict["retry_at"])
 
 
-def record_action(platform):
-    log = load_json("ratelimit.json", {})
-    log.setdefault(platform, []).append(time.time())
-    save_json("ratelimit.json", log)
+def record_action(platform, action="any"):
+    """Legacy wrapper: consume one token from the central controller."""
+    rl_controller.consume(home_dir(), platform, action)
 
 
 def in_quiet_hours(now=None):
@@ -178,8 +184,11 @@ def guard_acting(platform, action):
 
     Layer order (ToS is the ceiling — nothing below can override it):
       1. Platform Terms of Service (platforms/<name>/tos_rules.yaml)
-      2. Quiet hours + rate limits
-    Mission scope / autonomy is checked by the caller after this gate.
+      2. Crisis mode (global kill switch)
+      3. Rate limits (central controller; denial -> RateLimited, never dropped)
+      4. Quiet hours
+    Mission scope / autonomy / per-type approval policy are checked by the
+    caller after this gate.
     """
     tos_class = tos_mod.CLI_OP_TO_CLASS.get(action)
     if tos_class is None:
@@ -189,9 +198,14 @@ def guard_acting(platform, action):
     except tos_mod.ToSRefusal as e:
         log_refusal(action, platform, "", f"ToS: {e}")
         raise
+    try:
+        crisis_mod.check(home_dir())
+    except crisis_mod.CrisisActive as e:
+        log_refusal(action, platform, "", f"crisis: {e}")
+        raise Refused(str(e))
+    check_rate_limit(platform, action)
     if in_quiet_hours():
         raise Refused("quiet hours active: acting operations are paused")
-    check_rate_limit(platform)
 
 
 def approval_valid(action):
@@ -208,6 +222,72 @@ def log_refusal(action, platform, target, reason):
             "timestamp": utcnow(), "action": action, "platform": platform,
             "target": target, "reason": reason,
         }) + "\n")
+
+
+# --------------------------------------- unified approval queue bridge ---
+
+def _queue_item_for(action_type, platform, account, summary, payload,
+                    reason="", risk="normal", ref=None, status="pending",
+                    **extra):
+    """Create an item in the unified approval queue."""
+    return approvals_queue.propose(
+        home_dir(), action_type, platform, account, summary,
+        payload=payload, reason=reason, risk=risk, ref=ref, status=status,
+        **extra)
+
+
+def _apply_approval(item):
+    """Flip the underlying domain record for an approved queue item."""
+    ref = item.get("ref") or {}
+    store, rid = ref.get("store"), ref.get("id")
+    if not store or not rid:
+        return  # listener-created items (e.g. reply drafts) have no domain record
+    if store == "actions.json":
+        recs = load_json("actions.json", [])
+    elif store == "moderation.json":
+        recs = load_json("moderation.json", [])
+    elif store == "queue.json":
+        recs = load_json("queue.json", [])
+    else:
+        raise UsageError(f"unknown approval ref store {store!r}")
+    rec = next((r for r in recs if r["id"] == rid), None)
+    if rec is None:
+        raise UsageError(f"approval ref {rid!r} not found in {store}")
+    rec["status"] = "approved"
+    rec["approved_at"] = utcnow()
+    rec["approved_at_ts"] = time.time()
+    save_json(store, recs)
+
+
+def _apply_rejection(item, reason):
+    ref = item.get("ref") or {}
+    store, rid = ref.get("store"), ref.get("id")
+    if not store or not rid:
+        return
+    recs = load_json(store, [])
+    rec = next((r for r in recs if r["id"] == rid), None)
+    if rec is None:
+        raise UsageError(f"approval ref {rid!r} not found in {store}")
+    rec["status"] = "rejected"
+    rec["rejected_at"] = utcnow()
+    rec["rejection_reason"] = reason
+    save_json(store, recs)
+
+
+def _queue_rate_limited(action_type, platform, account, summary, payload):
+    """Rate-bucket denial: queue the action as rate_limited (never dropped)."""
+    verdict = rl_controller.check(home_dir(), platform, action_type,
+                                  get_policy())
+    retry_at = verdict.get("retry_at") or (time.time() + 3600)
+    item = _queue_item_for(
+        action_type, platform, account, summary, payload,
+        reason="rate bucket exhausted; will retry after retry_at",
+        risk="low", status="rate_limited", retry_at=retry_at)
+    log_refusal(action_type, platform, payload.get("target", ""),
+                f"rate limited; queued as {item['id']} for retry")
+    print(f"rate limited: action queued as {item['id']} "
+          f"(retry after {datetime.fromtimestamp(retry_at, timezone.utc).isoformat()})")
+    return item
 
 
 def check_like_guards(platform, author):
@@ -476,6 +556,22 @@ def cmd_watch(args):
             pa = ev.get("proposed_action")
             prop = f" -> proposes: {pa['action']}" if pa else ""
             print(f"  [{ev['severity']}] {ev['kind']}: {ev['summary'][:120]}{prop}")
+        # Crisis watcher auto-pause: opt-in ONLY (auto_pause defaults off).
+        # A false positive must never silence the account on its own.
+        if rec["type"] == "crisis":
+            cfg = w.effective_config()
+            spikes = [e for e in events if e.get("kind") == "crisis:spike"]
+            if spikes and cfg.get("auto_pause") and not crisis_mod.is_active(home_dir()):
+                st = crisis_mod.activate(
+                    home_dir(),
+                    f"auto-pause: crisis watcher {rec['id']} detected a negative spike",
+                    hold_fn=_crisis_hold)
+                hbc = hb.load_config()
+                hb.ping_path(hbc.base_url, "crisis", "auto-on", timeout=hbc.timeout)
+                hb.record_local("crisis", "crisis/auto-on", True,
+                                f"{len(spikes)} spike event(s)")
+                print(f"AUTO-PAUSE: crisis mode ON ({len(st['held'])} item(s) held). "
+                      f"Run `crisis off` explicitly to resume.")
     elif args.op == "events":
         events = read_events()
         if args.watcher:
@@ -573,17 +669,43 @@ def cmd_post(args):
                 raise UsageError(f"post {args.id} is {q['status']}")
             guard_acting(q["platform"], "post")
             mission = autonomous_decision(q["platform"], "post", q.get("text", ""))
-            q["status"] = "approved"
-            q["approved_at"] = utcnow()
-            q["approved_at_ts"] = time.time()
-            q["auto_approved"] = bool(mission)
-            q["mission"] = mission
-            record_action(q["platform"])
+            auto_via = ""
             if mission:
-                print(f"post {args.id} AUTO-APPROVED under mission {mission!r} "
+                auto_via = f"mission {mission!r}"
+            elif approvals_queue.per_type_policy(get_policy(), "publish") == "auto":
+                auto_via = "approval policy (per_type: auto)"
+            qitem = _queue_item_for(
+                "publish", q["platform"], q["account"],
+                f"publish post {args.id}",
+                {"post_id": args.id, "text": (q.get("text") or "")[:200],
+                 "video": q.get("video", "")},
+                reason=f"post publish ({auto_via})" if auto_via else "post publish",
+                ref={"store": "queue.json", "id": q["id"]},
+                status="pending")
+            # persist the auto flags on the underlying record first; the
+            # queue approve() below then flips it to approved via _apply_approval
+            q["auto_approved"] = bool(auto_via)
+            q["mission"] = mission
+            save_json("queue.json", queue)
+            # `post approve` IS the decision (explicit human, or auto via
+            # mission/policy): approve the queue item immediately so the
+            # queue stays the single audit trail.
+            try:
+                approvals_queue.approve(home_dir(), qitem["id"],
+                                        apply_fn=_apply_approval,
+                                        decided_by=mission or "user")
+            except (KeyError, ValueError) as e:
+                raise UsageError(str(e))
+            # refresh from the store (the queue flip wrote it)
+            queue = load_json("queue.json", [])
+            q = next((x for x in queue if x["id"] == args.id), None)
+            record_action(q["platform"], "post")
+            if auto_via:
+                print(f"post {args.id} AUTO-APPROVED ({auto_via}) "
                       f"for {q['platform']}/{q['account']}")
             else:
-                print(f"post {args.id} APPROVED for {q['platform']}/{q['account']}")
+                print(f"post {args.id} APPROVED for {q['platform']}/{q['account']} "
+                      f"(via approval {qitem['id']})")
             print("DRY-RUN: publish this in a real browser session; the CLI never posts by itself.")
         save_json("queue.json", queue)
 
@@ -617,7 +739,14 @@ def cmd_engage(args):
         acct = resolve_account(args.account)
         if args.op == "comment" and not args.text:
             raise UsageError("comment requires --text")
-        guard_acting(args.platform, args.op)
+        try:
+            guard_acting(args.platform, args.op)
+        except RateLimited as e:
+            _queue_rate_limited(args.op, args.platform, acct["username"],
+                                f"{args.op} -> {args.target}",
+                                {"target": args.target,
+                                 "text": args.text or ""})
+            raise
 
         # --- selective engagement: likes only for interesting posts ---
         text_for_scope = args.text or ""
@@ -642,9 +771,11 @@ def cmd_engage(args):
         # --- autonomous mode: auto-approve in scope, block out of scope ---
         mission = autonomous_decision(args.platform, args.op, text_for_scope)
         if mission:
-            status, auto = "approved", True
+            status, auto, auto_via = "approved", True, f"mission {mission!r}"
+        elif approvals_queue.per_type_policy(get_policy(), args.op) == "auto":
+            status, auto, auto_via = "approved", True, "approval policy (per_type: auto)"
         else:
-            status, auto = "proposed", False
+            status, auto, auto_via = "proposed", False, ""
 
         aid = new_id("a")
         actions.append({
@@ -655,19 +786,28 @@ def cmd_engage(args):
             "dry_run": True, "created": utcnow(),
             **({"approved_at": utcnow(), "approved_at_ts": time.time()} if auto else {}),
         })
-        record_action(args.platform)
+        qitem = _queue_item_for(
+            args.op, args.platform, acct["username"],
+            f"{args.op} -> {args.target}",
+            {"target": args.target, "text": args.text or ""},
+            reason=f"engagement proposal ({auto_via})" if auto else "engagement proposal",
+            ref={"store": "actions.json", "id": aid},
+            status="approved" if auto else "pending")
+        record_action(args.platform, args.op)
         if args.op == "like":
             record_like(args.platform, args.author or "", args.target)
         if args.op == "follow":
             record_follow(args.platform, args.target)
         save_json("actions.json", actions)
         if auto:
-            print(f"AUTO-APPROVED {aid} under mission {mission!r}: "
+            print(f"AUTO-APPROVED {aid} ({auto_via}): "
                   f"{args.op} -> {args.target} [{args.platform}/{acct['username']}]")
             print("DRY-RUN: perform it in a real browser session, then `engage done`.")
         else:
             print(f"DRY-RUN proposal {aid}: {args.op} -> {args.target} "
                   f"[{args.platform}/{acct['username']}]")
+            print(f"Queued for human approval as {qitem['id']} "
+                  f"(`approvals list`, `approvals approve {qitem['id']}`).")
             print("No action was taken. Run `engage approve` to approve it explicitly.")
     elif args.op == "list":
         items = actions
@@ -687,10 +827,19 @@ def cmd_engage(args):
         if a["status"] != "proposed":
             raise UsageError(f"action {args.id} is {a['status']}, not proposed")
         guard_acting(a["platform"], a["action"])
-        a["status"] = "approved"
-        a["approved_at"] = utcnow()
-        a["approved_at_ts"] = time.time()
-        save_json("actions.json", actions)
+        qitem = approvals_queue.find_by_ref(home_dir(), "actions.json", a["id"])
+        if qitem is None:
+            # legacy proposal predating the unified queue: create the item now
+            qitem = _queue_item_for(
+                a["action"], a["platform"], a["account"],
+                f"{a['action']} -> {a['target']}",
+                {"target": a["target"], "text": a.get("text", "")},
+                reason="legacy proposal adopted into the unified queue",
+                ref={"store": "actions.json", "id": a["id"]})
+        try:
+            approvals_queue.approve(home_dir(), qitem["id"], apply_fn=_apply_approval)
+        except (KeyError, ValueError) as e:
+            raise UsageError(str(e))
         print(f"action {args.id} APPROVED: {a['action']} -> {a['target']}")
         print("Perform it in a real browser session, then log it with `engage done`.")
     elif args.op == "done":
@@ -1285,34 +1434,38 @@ def cmd_moderate(args):
     elif args.op == "hide":
         check_platform(args.platform)
         acct = resolve_account(args.account)
-        guard_acting(args.platform, "hide")
-        text = args.text or ""
-        cls = mod_classify.classify_comment(text)
-        rules = get_policy().get("moderation", {}).get("auto_hide", [])
-        rule = mod_classify.check_auto_hide(text, rules)
-        log = _moderation_log()
-        mid = new_id("m")
-        rec = {
-            "id": mid, "action": "hide", "platform": args.platform,
-            "account": acct["username"], "post": args.post,
-            "comment": args.comment, "text": text[:200],
-            "classification": cls["label"], "reason": args.reason or "",
-            "dry_run": True, "created": utcnow(),
-        }
-        if rule:
-            rec.update({"status": "approved", "auto_approved": True,
-                        "auto_hide_rule": rule,
-                        "approved_at": utcnow(), "approved_at_ts": time.time()})
+        try:
+            guard_acting(args.platform, "hide")
+        except RateLimited:
+            _queue_rate_limited("hide_other", args.platform, acct["username"],
+                                f"hide comment {args.comment}",
+                                {"target": args.comment, "text": args.text or ""})
+            raise
+        rec, auto = mod_propose.propose_hide(
+            home_dir(), get_policy(), args.platform, acct["username"],
+            args.post, args.comment, args.text or "", args.reason or "")
+        mid = rec["id"]
+        qtype = "hide_spam" if auto else "hide_other"
+        qitem = _queue_item_for(
+            qtype, args.platform, acct["username"],
+            f"hide comment {args.comment} ({rec['classification']})",
+            {"comment": args.comment, "post": args.post,
+             "text": (args.text or "")[:200]},
+            reason=args.reason or f"moderation: {rec['classification']}",
+            risk="high" if rec["classification"] in ("toxic", "spam") else "normal",
+            ref={"store": "moderation.json", "id": mid},
+            status="approved" if auto else "pending")
+        if auto:
+            rule = rec.get("auto_hide_rule", {})
             print(f"hide {mid} AUTO-APPROVED under pre-approved rule "
-                  f"{rule['label']!r} ({rule['reason']})")
+                  f"{rule.get('label')!r} ({rule.get('reason')}) "
+                  f"[queue {qitem['id']}]")
         else:
-            rec.update({"status": "proposed", "auto_approved": False})
             print(f"DRY-RUN proposal {mid}: hide comment {args.comment} "
-                  f"[{args.platform}/{acct['username']}] ({cls['label']})")
-            print("Nothing was hidden. Run `moderate approve` to approve it explicitly.")
-        record_action(args.platform)
-        log.append(rec)
-        save_json("moderation.json", log)
+                  f"[{args.platform}/{acct['username']}] ({rec['classification']})")
+            print(f"Queued for human approval as {qitem['id']}. "
+                  "Nothing was hidden. Run `moderate approve` to approve it explicitly.")
+        record_action(args.platform, "hide")
     elif args.op == "list":
         log = _moderation_log()
         if args.status:
@@ -1331,10 +1484,19 @@ def cmd_moderate(args):
         if m["status"] != "proposed":
             raise UsageError(f"proposal {args.id} is {m['status']}, not proposed")
         guard_acting(m["platform"], "hide")
-        m["status"] = "approved"
-        m["approved_at"] = utcnow()
-        m["approved_at_ts"] = time.time()
-        save_json("moderation.json", log)
+        qitem = approvals_queue.find_by_ref(home_dir(), "moderation.json", m["id"])
+        if qitem is None:
+            qitem = _queue_item_for(
+                "hide_other", m["platform"], m["account"],
+                f"hide comment {m['comment']} ({m['classification']})",
+                {"comment": m["comment"]},
+                reason="legacy hide proposal adopted into the unified queue",
+                ref={"store": "moderation.json", "id": m["id"]})
+        try:
+            approvals_queue.approve(home_dir(), qitem["id"], apply_fn=_apply_approval,
+                                    decided_by="user")
+        except (KeyError, ValueError) as e:
+            raise UsageError(str(e))
         print(f"hide {args.id} APPROVED for {m['platform']}/{m['account']}")
         print("Hide the comment in a real browser session, then `moderate done`.")
     elif args.op == "done":
@@ -1352,6 +1514,191 @@ def cmd_moderate(args):
         m["done_at"] = utcnow()
         save_json("moderation.json", log)
         print(f"hide {args.id} logged as done")
+
+
+# -------------------------------------------------------------- approvals ---
+
+def cmd_approvals(args):
+    if args.op == "list":
+        items = approvals_queue.list_items(home_dir(), status=args.status)
+        if not items:
+            print("approval queue is empty")
+            return
+        for i in items:
+            extra = f" retry_at={i['retry_at']}" if i.get("retry_at") else ""
+            print(f"{i['id']} [{i['status']}] {i['type']} "
+                  f"[{i['platform']}/{i['account']}] risk={i['risk']}: "
+                  f"{i['summary'][:80]}{extra}")
+    elif args.op == "policy":
+        per = (get_policy().get("approvals") or {}).get("per_type") or {}
+        print("per-type approval policy (unlisted types default to require):")
+        for t in sorted(set(list(per) + ["post", "post_video", "publish", "like",
+                                         "comment", "follow", "retweet", "reply",
+                                         "dm", "profile", "hide_spam", "hide_other"])):
+            print(f"  {t}: {approvals_queue.per_type_policy(get_policy(), t)}")
+    elif args.op in ("approve", "reject"):
+        try:
+            if args.op == "approve":
+                item = approvals_queue.approve(home_dir(), args.id,
+                                               apply_fn=_apply_approval,
+                                               decided_by="user")
+            else:
+                item = approvals_queue.reject(home_dir(), args.id,
+                                              args.reason or "",
+                                              apply_fn=_apply_rejection,
+                                              decided_by="user")
+        except (KeyError, ValueError) as e:
+            raise UsageError(str(e))
+        print(f"approval {item['id']} {item['status']}: {item['summary'][:80]}")
+        if args.op == "reject" and args.reason:
+            print(f"reason logged: {args.reason}")
+        if item["status"] == "approved":
+            print("Perform it in a real browser session; the CLI never acts by itself.")
+
+
+# ----------------------------------------------------------------- people ---
+
+def _people_account(args):
+    acct = resolve_account(args.account)
+    return acct["username"]
+
+
+def cmd_people(args):
+    username = _people_account(args)
+    if args.op == "top":
+        ranked = people_db.top(home_dir(), username, n=args.n)
+        if not ranked:
+            print("no people remembered for this account yet")
+            return
+        for handle, sc, rec in ranked:
+            tags = f" tags={','.join(rec.get('tags') or [])}" if rec.get("tags") else ""
+            print(f"@{handle} score={sc} "
+                  f"(comments={rec['counts'].get('comment',0)} "
+                  f"dms={rec['counts'].get('dm',0)} "
+                  f"follows={rec['counts'].get('follow',0)}){tags}")
+    elif args.op == "show":
+        rec = people_db.get(home_dir(), username, args.handle)
+        if not rec:
+            raise UsageError(f"no record for @{args.handle}")
+        print(json.dumps(rec, indent=2))
+    elif args.op == "note":
+        rec = people_db.add_note(home_dir(), username, args.handle, args.text)
+        print(f"note saved for @{args.handle} ({len(rec['notes'])} total)")
+    elif args.op == "tag":
+        rec = people_db.add_tag(home_dir(), username, args.handle, args.tag)
+        print(f"@{args.handle} tags: {', '.join(rec['tags'])}")
+    elif args.op == "untag":
+        rec = people_db.remove_tag(home_dir(), username, args.handle, args.tag)
+        print(f"@{args.handle} tags: {', '.join(rec['tags']) or '(none)'}")
+
+
+# -------------------------------------------------------------- ratelimit ---
+
+def cmd_ratelimit(args):
+    if args.op == "status":
+        rows = rl_controller.status(home_dir(), get_policy())
+        if not rows:
+            print("no buckets yet — no actions recorded")
+            return
+        for r in rows:
+            print(f"{r['bucket']}: {r['remaining_hour']}/{r['per_hour']} per hour, "
+                  f"{r['remaining_day']}/{r['per_day']} per day "
+                  f"(denials={r['denials']})")
+    elif args.op == "config":
+        for platform in ("tiktok", "x", "instagram", "facebook", "youtube", "reddit"):
+            for action in ("like", "comment", "follow", "hide", "post", "any"):
+                ph, pd = rl_controller.limits_for(get_policy(), platform, action)
+                print(f"{platform}/{action}: {ph}/hour, {pd}/day")
+
+
+# ----------------------------------------------------------------- crisis ---
+
+def _crisis_hold():
+    """Park pending/rate_limited acting items; return held ids."""
+    held = []
+    for item in approvals_queue.list_items(home_dir()):
+        if (item["status"] in ("pending", "rate_limited")
+                and item["type"] in crisis_mod.ACTING_TYPES):
+            approvals_queue.set_status(home_dir(), item["id"], "held")
+            held.append(item["id"])
+    return held
+
+
+def _crisis_release(held_ids):
+    released = []
+    for qid in held_ids:
+        try:
+            approvals_queue.set_status(home_dir(), qid, "pending")
+            released.append(qid)
+        except KeyError:
+            continue
+    return released
+
+
+def cmd_crisis(args):
+    if args.op == "status":
+        st = crisis_mod.get(home_dir())
+        print(f"crisis mode: {'ACTIVE' if st['active'] else 'off'}")
+        if st["active"]:
+            print(f"  reason: {st['reason'] or '(none given)'}")
+            print(f"  started: {st['started_at']}")
+            print(f"  held items: {len(st['held'])}")
+    elif args.op == "on":
+        if crisis_mod.is_active(home_dir()):
+            print("crisis mode is already ACTIVE")
+            return
+        st = crisis_mod.activate(home_dir(), args.reason or "",
+                                 hold_fn=_crisis_hold)
+        cfg = hb.load_config()
+        hb.ping_path(cfg.base_url, "crisis", "on", timeout=cfg.timeout)
+        hb.record_local("crisis", "crisis/on", True,
+                        args.reason or "crisis mode activated")
+        print(f"CRISIS MODE ON: all acting operations paused "
+              f"({len(st['held'])} queued item(s) held). Watchers keep monitoring.")
+        if args.reason:
+            print(f"reason: {args.reason}")
+        print("Alert pinged via heartbeat urgent channel + local audit log.")
+    elif args.op == "off":
+        if not crisis_mod.is_active(home_dir()):
+            print("crisis mode is already off")
+            return
+        st, released = crisis_mod.deactivate(home_dir(),
+                                             release_fn=_crisis_release)
+        cfg = hb.load_config()
+        hb.ping_path(cfg.base_url, "crisis", "off", timeout=cfg.timeout)
+        hb.record_local("crisis", "crisis/off", True, "crisis mode cleared")
+        print(f"crisis mode OFF ({len(released)} held item(s) re-pended for approval):")
+        for qid in released:
+            print(f"  {qid} -> pending (re-approve with `approvals approve {qid}`)")
+
+
+# ----------------------------------------------------------------- listen ---
+
+def cmd_listen(args):
+    if args.op == "once" or args.once:
+        report = listen_mod.run_once(home_dir(), get_policy(),
+                                     watcher_ids=args.watchers.split(",")
+                                     if args.watchers else None)
+    else:
+        interval = args.interval
+        print(f"listening every {interval}s over notification/comment/message "
+              f"watchers (Ctrl-C to stop; poll-based, see docs/listen-latency.md)")
+        try:
+            while True:
+                report = listen_mod.run_once(home_dir(), get_policy())
+                for wid, outs in report.items():
+                    for o in outs:
+                        print(f"[{wid}] {o}")
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("listener stopped")
+            return
+    total = 0
+    for wid, outs in report.items():
+        for o in outs:
+            print(f"[{wid}] {o}")
+            total += 1
+    print(f"listen pass complete: {len(report)} watcher(s), {total} outcome(s)")
 
 
 # --------------------------------------------------------------- caption ---
@@ -2212,6 +2559,65 @@ def build_parser():
     p = mo_sub.add_parser("list", help="list hide proposals")
     p.add_argument("--status", default=None)
     mo.set_defaults(func=cmd_moderate)
+
+    apv = sub.add_parser("approvals", help="unified human approval queue")
+    ap_sub = apv.add_subparsers(dest="op", required=True)
+    p = ap_sub.add_parser("list", help="list queued items")
+    p.add_argument("--status", default=None,
+                   help="filter: pending|approved|rejected|held|rate_limited|done")
+    p = ap_sub.add_parser("approve", help="approve a queued item (executes it)")
+    p.add_argument("--id", required=True, help="approval item id")
+    p = ap_sub.add_parser("reject", help="reject a queued item (reason logged)")
+    p.add_argument("--id", required=True, help="approval item id")
+    p.add_argument("--reason", default="", help="why it was rejected")
+    ap_sub.add_parser("policy", help="show per-type approval policy")
+    apv.set_defaults(func=cmd_approvals)
+
+    pe = sub.add_parser("people", help="people memory: recurring followers & conversations")
+    pe_sub = pe.add_subparsers(dest="op", required=True)
+    p = pe_sub.add_parser("top", help="top people by interaction score")
+    p.add_argument("--account", required=True)
+    p.add_argument("-n", type=int, default=10)
+    p = pe_sub.add_parser("show", help="show a person's record")
+    p.add_argument("--account", required=True)
+    p.add_argument("handle", help="handle to look up")
+    p = pe_sub.add_parser("note", help="attach a note to a person")
+    p.add_argument("--account", required=True)
+    p.add_argument("handle", help="handle")
+    p.add_argument("text", help="note text")
+    p = pe_sub.add_parser("tag", help="add a tag (e.g. top-fan, collaborator)")
+    p.add_argument("--account", required=True)
+    p.add_argument("handle", help="handle")
+    p.add_argument("tag", help="tag to add")
+    p = pe_sub.add_parser("untag", help="remove a tag")
+    p.add_argument("--account", required=True)
+    p.add_argument("handle", help="handle")
+    p.add_argument("tag", help="tag to remove")
+    pe.set_defaults(func=cmd_people)
+
+    rl = sub.add_parser("ratelimit", help="central rate-limit controller")
+    rl_sub = rl.add_subparsers(dest="op", required=True)
+    rl_sub.add_parser("status", help="bucket usage and remaining quota")
+    rl_sub.add_parser("config", help="effective per-action limits")
+    rl.set_defaults(func=cmd_ratelimit)
+
+    cr = sub.add_parser("crisis", help="crisis mode: global kill switch for acting")
+    cr_sub = cr.add_subparsers(dest="op", required=True)
+    p = cr_sub.add_parser("on", help="pause ALL acting operations immediately")
+    p.add_argument("--reason", default="", help="why crisis mode was triggered")
+    cr_sub.add_parser("off", help="clear crisis mode (explicit only, never auto)")
+    cr_sub.add_parser("status", help="show crisis state")
+    cr.set_defaults(func=cmd_crisis)
+
+    li = sub.add_parser("listen", help="fast-poll notification/comment/DM listener")
+    li_sub = li.add_subparsers(dest="op", required=False)
+    li_sub.add_parser("once", help="single listen pass (default)")
+    li.add_argument("--once", action="store_true", help="single pass and exit")
+    li.add_argument("--interval", type=int, default=60,
+                    help="poll interval seconds for continuous mode")
+    li.add_argument("--watchers", default=None,
+                    help="comma-separated watcher ids (default: all listen types)")
+    li.set_defaults(func=cmd_listen, op="once")
 
     cap = sub.add_parser("caption", help="platform-optimized caption generator")
     cap_sub = cap.add_subparsers(dest="op", required=True)

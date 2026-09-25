@@ -105,8 +105,12 @@ def score_post(item, profile=None):
     return score, reasons, interesting
 
 
-def score_user(user, profile=None):
-    """Score a user dict (for follow decisions). Returns (score, reasons, interesting)."""
+def score_user(user, profile=None, people_tags=None):
+    """Score a user dict (for follow decisions). Returns (score, reasons, interesting).
+
+    people_tags: optional list of people-DB tags for this handle — a
+    "top-fan" tag adds +2 (documented boost so top fans clear the threshold).
+    """
     profile = profile or load_profile()
     weights = profile.get("weights") or {}
     w_topic = weights.get("topic", 2)
@@ -116,6 +120,10 @@ def score_user(user, profile=None):
     if handle and handle in [a.lower().lstrip("@") for a in (profile.get("authors") or [])]:
         score += w_author
         reasons.append(f"author affinity: @{handle} (+{w_author})")
+    for tag in people_tags or []:
+        if tag == "top-fan":
+            score += 2
+            reasons.append("people-db: top-fan tag (+2)")
     hay = f"{user.get('bio', '')} {user.get('niche', '')}".lower()
     for topic in profile.get("topics") or []:
         if topic and topic.lower() in hay:

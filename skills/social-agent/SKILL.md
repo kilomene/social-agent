@@ -24,16 +24,31 @@ Requirements: Python 3.8+, nothing else (pure stdlib).
 - `post` / `engage` create **dry-run proposals**; each needs an explicit
   `approve` before anything may be performed, and performance happens in a real
   browser session, logged with `engage done`.
+- **One approval queue** (`approvals list/approve/reject`): every proposal —
+  engagement, publish, hides, reply drafts — is reviewed in one place with a
+  per-type require/auto policy (default: require). Approving executes the
+  underlying action; rejecting logs the reason.
 - **Selective engagement**: likes/follows only for posts/users scoring as
   interesting against the `interests:` profile; anti-spam guards (like caps,
   per-author cooldown, min gap, follow caps) refuse spam patterns with reasons.
+- **Rate limits** are enforced per (platform, action) by a central
+  controller; an exhausted bucket refuses with exit 2 and queues the action
+  as `rate_limited` with a retry time — never dropped.
+- **Crisis mode** (`crisis on/off`) is the global kill switch: it pauses all
+  acting, parks pending items as held, and never auto-resumes. Watchers keep
+  monitoring read-only.
 - **Autonomous mode** is off by default; grant per-mission with
   `autonomy grant --mission <name> --confirm`. In-scope actions auto-approve;
   out-of-scope actions are blocked and logged.
 - **Profile changes always need explicit `profile approve`** — no exceptions,
   even in autonomous mode.
-- Per-platform rate limits and quiet hours are enforced by the CLI and refuse
-  with exit code 2.
+- **Notification listener** (`listen once`): questions → reply draft queued
+  for approval; toxic/spam → hide proposal; DMs → people memory + user
+  notification. People memory (`people top/show/note/tag`) tracks recurring
+  followers; sustained engagement auto-tags top fans.
+- Guard order (nothing below overrides anything above):
+  **ToS > crisis > approvals > rate limits > quiet hours.** Per-platform
+  quiet hours are enforced by the CLI and refuse with exit code 2.
 - Never store credentials in the repo or state. Sign in happens in the user's
   own browser.
 
@@ -91,6 +106,15 @@ social-agent youtube titles "my sora workflow" --keyword sora
 social-agent youtube preflight --title "..." --thumbnail thumb.png \
     --hook-30s --audio --retention-edit --captions --end-screen
 social-agent voice check --text "draft..." --platform tiktok
+
+# 10. Operations: approvals, people, rate limits, crisis, listener
+social-agent engage like --platform tiktok --account main --target v1
+social-agent approvals list && social-agent approvals approve --id <q-id>
+social-agent people top --account main
+social-agent ratelimit status
+social-agent crisis on --reason "..."   # kill switch; crisis off to resume
+social-agent listen once                # route comments/DMs/notifications
+# Guard order: ToS > crisis > approvals > rate limits > quiet hours.
 social-agent identity create --account main --name "Owner Name" \
     --voice-traits "dry humor, short sentences"
 social-agent identity check --text "draft..." --account main

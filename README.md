@@ -182,6 +182,42 @@ Every video/audio command prints the exact ffmpeg invocation before running
 Audio operates on files **you provide** — use platform-licensed music
 libraries or your own audio (see `audio/MUSIC.md`).
 
+## Operations: approvals, people, rate limits, crisis, listener
+
+Five operational capabilities, one guard order
+(**ToS > crisis > approvals > rate limits > quiet hours**):
+
+```bash
+# 1. one approval queue for everything (pending/approved/rejected/held/rate_limited)
+social-agent engage like --platform tiktok --account main --target v1
+social-agent approvals list                 # review the single queue
+social-agent approvals approve --id q-abc   # executes the underlying action
+social-agent approvals reject --id q-abc --reason "too salesy"
+social-agent approvals policy               # per-type require/auto (default: require)
+
+# 2. people memory: recurring followers & conversations
+social-agent people top --account main
+social-agent people show --account main curious_cat
+social-agent people note --account main curious_cat "asked about background blur"
+social-agent people tag --account main curious_cat top-fan
+
+# 3. central rate-limit controller (per platform+action, sliding windows)
+social-agent ratelimit status               # remaining quota per bucket
+social-agent ratelimit config               # effective limits
+# exhausted bucket -> exit 2, action queued as rate_limited with retry_at (never dropped)
+
+# 4. crisis mode: the kill switch (never auto-resumes)
+social-agent crisis on --reason "viral backlash brewing"
+social-agent crisis status
+social-agent crisis off                     # explicit only; held items re-pend for approval
+
+# 5. notification listener: fast polls, careful routing
+social-agent listen once                    # single pass over notification/comment/DM watchers
+social-agent listen --interval 60           # continuous (Ctrl-C to stop)
+# questions -> reply draft (voice+identity gated) queued for approval
+# toxic/spam -> hide proposal; DMs -> people memory + user notification
+```
+
 ## Heartbeats
 
 Every watcher run emits `<base>/<watcher-id>/start`, then success or `/fail`
@@ -202,12 +238,19 @@ for pairing with the heartbeat repo's cron wrapper and daemon.
 ```
 bin/social-agent        CLI (accounts, watch, post, engage, mission, autonomy,
                         profile, heartbeat, research, analytics, doctor,
-                        growth, youtube, voice, security, study, identity)
+                        growth, youtube, voice, security, study, identity,
+                        moderate, caption, video, audio, editor,
+                        approvals, people, ratelimit, crisis, listen)
 watchers/               poll-based monitors; check() -> structured events (read-only)
   framework.py          base class: config schema, state, idempotent dedupe, events.jsonl
   notification|comment|feed|follow|activity|channel|message _watcher.py
   trend|competitor|sentiment|mention|velocity|content-idea|crisis|security _watcher.py
   fixtures/             sample JSON feeds so everything runs offline
+approvals/              unified human approval queue (pending/approved/rejected/held/rate_limited)
+people/                 people memory: interaction scores, notes, tags, top fans
+ratelimit/              central per-(platform,action) sliding-window controller
+crisis/                 crisis mode: global kill switch, never auto-resumes
+listen.py               fast-poll listener routing comments/DMs/notifications
 engagement/             interest scoring (interests profile) + anti-spam guards
 growth/                 organic playbooks, follower goals, 5-pillar audits,
                         YouTube packaging (titles, descriptions, preflight gate)

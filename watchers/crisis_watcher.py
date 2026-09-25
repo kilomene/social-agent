@@ -34,6 +34,7 @@ class CrisisWatcher(Watcher):
             "spike_threshold": 5,
             "window_hours": 6,
             "alert_cooldown_hours": 12,
+            "auto_pause": False,
         },
     }
 

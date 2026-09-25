@@ -22,7 +22,20 @@ approvals:
     - profile
   approver: user
   expiry_hours: 24
-  note: "Each acting operation needs its own explicit approval record. Profile changes ALWAYS need explicit approval, even in autonomous mode — there is no code path that auto-approves them."
+  per_type:
+    post: require
+    post_video: require
+    publish: require
+    like: require
+    comment: require
+    follow: require
+    retweet: require
+    reply: require
+    dm: require
+    profile: require
+    hide_spam: auto
+    hide_other: require
+  note: "Unified approval queue (approvals/pending.json). per_type: require = human must approve (safe default for anything unlisted); auto = act immediately, still logged. hide_spam:auto only fires on pre-approved moderation.auto_hide rule matches. Profile changes ALWAYS need explicit approval, even in autonomous mode — there is no code path that auto-approves them."
 
 # Selective engagement: what counts as "interesting" enough to like/follow.
 interests:
@@ -70,9 +83,21 @@ rate_limits:
   tiktok:
     actions_per_hour: 10
     actions_per_day: 40
+    like:
+      per_hour: 30
+      per_day: 200
+    comment:
+      per_hour: 20
+      per_day: 100
+    follow:
+      per_hour: 10
+      per_day: 30
   x:
     actions_per_hour: 15
     actions_per_day: 100
+    like:
+      per_hour: 40
+      per_day: 300
   instagram:
     actions_per_hour: 10
     actions_per_day: 50
@@ -85,6 +110,7 @@ rate_limits:
   reddit:
     actions_per_hour: 20
     actions_per_day: 100
+  note: "Central controller (ratelimit/): per (platform, action) sliding windows. Per-action overrides are conservative defaults — raise deliberately. Denied actions are queued as rate_limited with retry_at (never dropped); consecutive denials widen the retry window exponentially."
 
 watchers:
   poll_interval_seconds: 300
@@ -127,3 +153,11 @@ moderation:
 
 identity:
   note: "On social platforms the agent IS the account owner: first-person, owner's name and voice, never claims to be an AI/agent/chatbot. Personas live in <home>/identity/accounts/<label>.md and always belong to the verified account owner (ghostwriter pattern, never a third party). Identity-break text in a draft is refused and logged to refusals.jsonl."
+
+# Crisis mode: global kill switch. `crisis on` pauses ALL acting operations
+# (posts, likes, comments, follows, hides, publishes) while watchers keep
+# monitoring read-only. Pending approval items are parked as held and
+# re-pended on `crisis off` — never auto-resumed. Guard order:
+# ToS > crisis > approvals > rate limits > quiet hours.
+crisis:
+  note: "Only an explicit `crisis off` clears crisis mode. The crisis watcher's auto_pause defaults to off (opt-in): a false positive must never silence the account on its own."

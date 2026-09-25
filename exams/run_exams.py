@@ -1011,6 +1011,174 @@ def exam_45_brand_apply_stamps_kit():
     return ex
 
 
+def exam_46_unified_approval_queue_publish():
+    ex = Exam("exam-46", "Unified approval queue: publish proposed, queued, approved executes")
+    home = fresh_home()
+    setup_account(home)
+    # engage proposal sits in the queue as pending (watchers propose, never act)
+    r = run(home, None, "engage", "like", "--platform", "tiktok",
+            "--account", "main", "--target", "v46")
+    ex.check("proposal exits 0", r.returncode == 0, r.stderr.strip()[:80])
+    pend = state(home, "approvals/pending.json", [])
+    ex.check("one pending queue item", len(pend) == 1 and pend[0]["status"] == "pending",
+             str(pend)[:120])
+    qid = pend[0]["id"]
+    r = run(home, None, "approvals", "list")
+    ex.check("approvals list shows the item", qid in r.stdout, r.stdout.strip()[:80])
+    # video publish: post approve routes through the unified queue
+    run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+        "--text", "sora ai video tutorial part 46", "--id", "ep46")
+    run(home, None, "post", "queue", "ep46")
+    r = run(home, None, "post", "approve", "ep46")
+    ex.check("post approve still dry-run", "DRY-RUN" in r.stdout and
+             "never posts by itself" in r.stdout, r.stdout.strip()[-100:])
+    pend = state(home, "approvals/pending.json", [])
+    pub = [i for i in pend if i["type"] == "publish"]
+    ex.check("publish item recorded in the queue", len(pub) == 1,
+             str([i["status"] for i in pub]))
+    ex.check("explicit approve executes the underlying post",
+             state(home, "queue.json")[0]["status"] == "approved",
+             str(state(home, "queue.json")[0])[:120])
+    # and the earlier engagement proposal approves through the queue too
+    r = run(home, None, "approvals", "approve", "--id", qid)
+    ex.check("queue approve executes engagement",
+             r.returncode == 0 and state(home, "actions.json")[0]["status"] == "approved",
+             r.stdout.strip()[:80])
+    return ex
+
+
+def exam_47_people_memory_top_fans():
+    ex = Exam("exam-47", "People memory: listener remembers actors, top-fans surface")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "listen_comments.json")
+    r = run(home, None, "watch", "start", "--type", "comment", "--platform", "tiktok",
+            "--account", "main", "--set", "post_id=vid9", "--fixture", fx, "--id", "ew47")
+    ex.check("comment watcher starts", r.returncode == 0, r.stderr.strip()[:80])
+    fxm = os.path.join(FX, "listen_dms.json")
+    r = run(home, None, "watch", "start", "--type", "message", "--platform", "tiktok",
+            "--account", "main", "--fixture", fxm, "--id", "ew47m")
+    ex.check("message watcher starts", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "listen", "once")
+    ex.check("listen pass completes", r.returncode == 0 and
+             "listen pass complete" in r.stdout, r.stdout.strip()[-80:])
+    people = state(home, "people/examuser.json", {})
+    ex.check("commenter remembered", "curious_cat" in people, str(sorted(people))[:120])
+    ex.check("DM sender remembered with dm count",
+             people.get("fan_two", {}).get("counts", {}).get("dm") == 1,
+             str(people.get("fan_two"))[:120])
+    # manual memory tools: note + tag + top + show
+    r = run(home, None, "people", "note", "--account", "main", "curious_cat",
+            "asked about background blur")
+    ex.check("note saved", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "people", "tag", "--account", "main", "curious_cat",
+            "top-fan")
+    ex.check("top-fan tag applied", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "people", "top", "--account", "main")
+    ex.check("top lists the fan", "curious_cat" in r.stdout, r.stdout.strip()[:120])
+    r = run(home, None, "people", "show", "--account", "main", "curious_cat")
+    ex.check("show carries the note and tag",
+             "background blur" in r.stdout and "top-fan" in r.stdout,
+             r.stdout.strip()[:120])
+    return ex
+
+
+def exam_48_ratelimit_exhaustion_queues_retry():
+    ex = Exam("exam-48", "Rate-limit exhaustion queues the action as rate_limited")
+    home = fresh_home()
+    setup_account(home)
+    pol = write_policy(os.path.join(home, "policy.yaml"),
+                       rate_limits={"tiktok": {"hide": {"per_hour": 1,
+                                                       "per_day": 10}}})
+    r = run(home, pol, "moderate", "hide", "--platform", "tiktok", "--account", "main",
+            "--post", "p1", "--comment", "c1", "--text", "mildly rude comment")
+    ex.check("first hide exits 0", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, pol, "moderate", "hide", "--platform", "tiktok", "--account", "main",
+            "--post", "p1", "--comment", "c2", "--text", "another rude comment")
+    ex.check("second hide refused with exit 2",
+             r.returncode == 2 and "rate limit" in r.stderr.lower(),
+             (r.stderr.strip() + r.stdout.strip())[:120])
+    ex.check("underlying log keeps exactly 1 record",
+             len(state(home, "moderation.json", [])) == 1)
+    pend = state(home, "approvals/pending.json", [])
+    rl_items = [i for i in pend if i["status"] == "rate_limited"]
+    ex.check("denied action queued as rate_limited (never dropped)",
+             len(rl_items) == 1 and rl_items[0].get("retry_at", 0) > time.time(),
+             str([(i["id"], i.get("retry_at")) for i in rl_items])[:120])
+    r = run(home, pol, "ratelimit", "status")
+    ex.check("0 remaining reported", "0/1 per hour" in r.stdout,
+             r.stdout.strip()[:120])
+    return ex
+
+
+def exam_49_crisis_pauses_and_repends():
+    ex = Exam("exam-49", "Crisis mode pauses acting; off re-pends held items")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "engage", "follow", "--platform", "tiktok",
+        "--account", "main", "--target", "someone")
+    qid = state(home, "approvals/pending.json", [])[0]["id"]
+    r = run(home, None, "crisis", "on", "--reason", "exam spike")
+    ex.check("crisis on exits 0", r.returncode == 0 and "CRISIS MODE ON" in r.stdout,
+             r.stdout.strip()[:80])
+    r = run(home, None, "engage", "follow", "--platform", "tiktok",
+            "--account", "main", "--target", "other")
+    ex.check("acting refused under crisis", r.returncode == 2 and
+             "crisis" in r.stderr.lower(), r.stderr.strip()[:100])
+    r = run(home, None, "crisis", "status")
+    ex.check("status shows ACTIVE", "ACTIVE" in r.stdout, r.stdout.strip()[:80])
+    held = state(home, "approvals/pending.json", [])[0]
+    ex.check("pending item held during crisis", held["status"] == "held",
+             str(held)[:80])
+    r = run(home, None, "crisis", "off")
+    ex.check("crisis off re-pends", r.returncode == 0 and
+             "re-pended" in r.stdout, r.stdout.strip()[:100])
+    ex.check("held item back to pending (not auto-approved)",
+             state(home, "approvals/pending.json", [])[0]["status"] == "pending")
+    # still needs a human decision after the crisis clears
+    r = run(home, None, "approvals", "approve", "--id", qid)
+    ex.check("explicit re-approval works",
+             r.returncode == 0 and state(home, "actions.json")[0]["status"] == "approved",
+             r.stdout.strip()[:80])
+    return ex
+
+
+def exam_50_listen_once_routes_events():
+    ex = Exam("exam-50", "listen --once routes comments/DMs/notifications")
+    home = fresh_home()
+    setup_account(home)
+    r = run(home, None, "watch", "start", "--type", "comment", "--platform", "tiktok",
+            "--account", "main", "--set", "post_id=vid9",
+            "--fixture", os.path.join(FX, "listen_comments.json"), "--id", "ew50c")
+    ex.check("comment watcher starts", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "watch", "start", "--type", "message", "--platform", "tiktok",
+            "--account", "main",
+            "--fixture", os.path.join(FX, "listen_dms.json"), "--id", "ew50m")
+    ex.check("message watcher starts", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "watch", "start", "--type", "notification", "--platform", "tiktok",
+            "--account", "main",
+            "--fixture", os.path.join(FX, "notifications.json"), "--id", "ew50n")
+    ex.check("notification watcher starts", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "listen", "once")
+    ex.check("listen pass completes", r.returncode == 0 and
+             "listen pass complete" in r.stdout, r.stdout.strip()[-80:])
+    ex.check("question routes to a reply draft",
+             "reply draft" in r.stdout, r.stdout.strip()[:200])
+    pend = state(home, "approvals/pending.json", [])
+    ex.check("reply draft sits pending in the queue",
+             any(i["type"] == "reply" and i["status"] == "pending" for i in pend),
+             str([(i["type"], i["status"]) for i in pend])[:160])
+    notes = state(home, "notifications.json", [])
+    ex.check("DM raised a user notification",
+             any(n.get("kind") == "dm" for n in notes),
+             str([(n.get("kind")) for n in notes])[:80])
+    people = state(home, "people/examuser.json", {})
+    ex.check("notification actors recorded",
+             "fan_one" in people and "new_follower" in people,
+             str(sorted(people))[:120])
+    return ex
+
+
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
          exam_3_rate_limit_enforced,
@@ -1055,7 +1223,12 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_42_qa_flags_black_frames,
          exam_43_batch_grades_three_fixtures,
          exam_44_queue_add_run_resume,
-         exam_45_brand_apply_stamps_kit]
+         exam_45_brand_apply_stamps_kit,
+         exam_46_unified_approval_queue_publish,
+         exam_47_people_memory_top_fans,
+         exam_48_ratelimit_exhaustion_queues_retry,
+         exam_49_crisis_pauses_and_repends,
+         exam_50_listen_once_routes_events]
 
 
 def main():
