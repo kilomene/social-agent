@@ -10,12 +10,17 @@ stdlib — no dependencies, no binaries, no credentials stored.
 
 ```bash
 git clone https://github.com/kilomene/social-agent.git ~/workspace/social-agent
+cd ~/workspace/social-agent && ./install.sh   # creates ~/SocialAgent/ (its own brain)
+export SOCIAL_AGENT_HOME=~/SocialAgent
 export PATH="$HOME/workspace/social-agent/bin:$PATH"
 social-agent doctor
 ```
 
-Requirements: Python 3.8+. State lives in `~/.social-agent`
-(override with `SOCIAL_AGENT_HOME`).
+Requirements: Python 3.8+, stdlib only (no pip packages needed).
+`install.sh` is idempotent — re-run it to top up a workspace, or
+`install.sh --home <dir>` for another isolated install. State lives in
+`~/SocialAgent` (override with `SOCIAL_AGENT_HOME`; the old default
+`~/.social-agent` still works).
 
 ## Quickstart
 
@@ -217,6 +222,61 @@ social-agent listen --interval 60           # continuous (Ctrl-C to stop)
 # questions -> reply draft (voice+identity gated) queued for approval
 # toxic/spam -> hide proposal; DMs -> people memory + user notification
 ```
+
+## Permanent memory, backups, crash recovery
+
+The agent remembers everything in `<home>/memory.db` (SQLite) and
+backs itself up automatically (`<home>/backups/`, content-addressed
+snapshots). Every acting intent is journaled (`<home>/audit/journal.jsonl`)
+before execution so a crash can be resumed safely — `recover` verifies
+each unfinished intent against real state and **never repeats** one that
+already completed (no duplicate posts).
+
+```bash
+social-agent memory query "SELECT label FROM accounts"   # SELECT-only, enforced
+social-agent memory remember "post daily" --by user --why "consistency"
+social-agent memory recall
+social-agent memory relate brand:nova owns account:main  # relationship graph
+social-agent memory graph brand:nova
+social-agent memory sop add "weekly review" --body "# review"
+social-agent backup list                                  # snapshots w/ triggers
+social-agent backup diff <snap1> <snap2>
+social-agent backup restore <snap>              # dry-run plan by default
+social-agent backup restore <snap> --apply      # stages only; never overwrites live files
+social-agent recover                            # replay the journal after a crash
+social-agent recover --execute                  # also re-execute safe local renders
+```
+
+## Persistent browser automation (no APIs)
+
+Every platform is driven through a real Chromium browser
+([Playwright](https://playwright.dev)) — no APIs, no API keys. One
+persistent profile per account (`<home>/accounts/<label>/browser-profile/`);
+logins survive restarts like your own browser.
+
+```bash
+pip install playwright && playwright install chromium   # one-time engine setup
+social-agent browser login --account main --platform x  # headed: YOU sign in
+social-agent browser act --account main --platform x --action like \
+  --target https://x.com/some/status/123 --simulate     # offline dry run
+social-agent browser status
+```
+
+- First login is **headed** — the human signs in (agent never sees the
+  password). 2FA/challenge → the agent **pauses, notifies you, and waits**;
+  it never tries to bypass.
+- Every browser action is human-paced (randomized delays,
+  scroll-before-click, active hours), routed through the central
+  rate-limit controller, and journaled with an idempotency key (a crashed
+  session resumes, never repeats a post).
+- Per-platform recipes: `platforms/browser/` (selectors are a maintenance
+  surface — see `docs/browser-ops.md`).
+- **ToS honesty:** X browser-driven engagement is `prohibited` by default
+  (X requires API-only automation) and fails closed. Explicit opt-in only:
+  `tos.acknowledged_risk: [x]` in policy.yaml downgrades it to restricted
+  with a loud logged advisory (account suspension/ban risk) recorded in
+  `audit/tos_acknowledgments.jsonl`. Without the acknowledgment, the
+  prohibition stands — the agent never silently violates terms.
 
 ## Heartbeats
 

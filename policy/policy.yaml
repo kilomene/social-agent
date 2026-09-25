@@ -161,3 +161,66 @@ identity:
 # ToS > crisis > approvals > rate limits > quiet hours.
 crisis:
   note: "Only an explicit `crisis off` clears crisis mode. The crisis watcher's auto_pause defaults to off (opt-in): a false positive must never silence the account on its own."
+
+# Permanent memory: the agent's brain lives in <home>/memory.db (SQLite,
+# stdlib-only). Migrations run automatically; Postgres is the documented
+# scale-up path (core/POSTGRES.md). people/ JSON is a legacy store and is
+# imported once into memory.db on first access.
+memory:
+  note: "Memory is durable across restarts. Every mutation triggers an incremental backup. `memory query` is SELECT-only and enforced in code (plus PRAGMA query_only)."
+
+# Automatic backups: content-addressed snapshots under <home>/backups/
+# (manifests + deduped blobs). Triggers fire from post drafts, renders,
+# account changes, memory mutations, and before risky actions.
+backups:
+  keep_daily: 7
+  keep_hourly: 24
+  note: "Retention: keep the last keep_hourly snapshots plus one per day for keep_daily days. Restore always stages (never overwrites live files); `backup restore` dry-runs by default."
+
+# Crash recovery: append-only <home>/audit/journal.jsonl logs every acting
+# intent BEFORE execution (with an idempotency key) and marks it
+# completed/failed AFTER. `recover` verifies each unfinished intent
+# against real state — already-done work is SKIPPED, never repeated.
+recovery:
+  auto_suggest: true
+  note: "Platform-acting intents are never auto-executed after a crash; they need human re-approval. Safe local work (renders) may re-execute with `recover --execute`."
+
+# ToS acknowledged risk: EMPTY by default. The ToS layer fails closed on
+# prohibited actions (e.g. X browser-driven engagement, which X's terms
+# restrict to API-only automation). If the user explicitly opts a platform
+# in here, a prohibition DOWNGRADESTO restricted with a loud, logged
+# advisory — the risk is the user's informed choice, and the agent records
+# it. Without the acknowledgment, prohibitions stay fail-closed.
+tos:
+  # To opt in, add block-style entries, e.g.:
+  #   acknowledged_risk:
+  #     - x
+  acknowledged_risk:
+
+# Persistent browser automation (no APIs). The agent drives platforms
+# through Playwright/Chromium with per-account persistent profiles.
+# Human pacing + active hours + the central rate-limit controller apply
+# to every browser action.
+browser:
+  active_hours:
+    enabled: false
+    start: "08:00"
+    end: "23:00"
+  note: "Set active_hours.enabled: true to confine browser actions to a daily window."
+
+# Backend selection per platform: "browser" (default — persistent browser
+# automation, no keys) or "api" (config option; nothing in this repo
+# requires or uses API keys).
+platforms:
+  tiktok:
+    backend: browser
+  x:
+    backend: browser
+  instagram:
+    backend: browser
+  facebook:
+    backend: browser
+  youtube:
+    backend: browser
+  reddit:
+    backend: browser

@@ -11,12 +11,45 @@ Install and use the social-agent toolkit from the `social-agent` repo.
 
 ```bash
 git clone <repo-url> ~/workspace/social-agent
+cd ~/workspace/social-agent && ./install.sh   # creates ~/SocialAgent/ (its own brain)
 export PATH="$HOME/workspace/social-agent/bin:$PATH"
-export SOCIAL_AGENT_HOME="$HOME/.social-agent"   # state dir (default)
+export SOCIAL_AGENT_HOME="$HOME/SocialAgent"   # isolated install dir
 social-agent doctor
 ```
 
 Requirements: Python 3.8+, nothing else (pure stdlib).
+`install.sh` is idempotent; `--home <dir>` makes another isolated install.
+
+## Permanent memory, backups, crash recovery
+
+- Memory: `social-agent memory query|remember|recall|relate|graph|sop|campaign|schedule|content|voice|account`
+  — SQLite at `<home>/memory.db`; `query` is SELECT-only.
+- Backups: `social-agent backup list|snapshot|diff|restore` — content-addressed
+  snapshots fire automatically on post drafts, renders, account changes,
+  memory writes, and before risky actions. `restore` dry-runs by default
+  and only ever *stages* (never overwrites live files).
+- Crash recovery: `social-agent recover [--execute]` — replays the action
+  journal, verifies each unfinished intent against real state, skips the
+  already-done (no duplicate posts), never auto-executes platform actions.
+- Guardrails §26 (policy/guardrails.md); scale-up notes in core/POSTGRES.md.
+
+## Persistent browser automation (no APIs)
+
+- Engine: Playwright/Chromium (`pip install playwright && playwright install chromium`;
+  see `browser/SETUP.md`). Tests use a simulated driver — never a real browser.
+- `social-agent browser login --account <label> --platform <p>` — headed
+  first login (the human signs in; agent never sees the password).
+  Profiles persist at `<home>/accounts/<label>/browser-profile/`.
+- `social-agent browser act --account <l> --platform <p> --action like
+  --target <url> [--simulate]` — one browser-backed action (like, comment,
+  follow, post_text/video, dm_send, hide_comment...). Every action is
+  ToS-checked first, human-paced, rate-limited, and journaled.
+- 2FA/challenge → pause + user notification, never bypass.
+- Recipes: `platforms/browser/` (selectors rot — re-check discipline).
+  Ops doc: `docs/browser-ops.md`.
+- ToS: X browser engagement is `prohibited`/fail-closed by default;
+  `tos.acknowledged_risk: [x]` downgrades to restricted ONLY with a loud
+  logged advisory (guardrails §27, `platforms/x/terms.md`).
 
 ## Safety model (read policy/guardrails.md first)
 

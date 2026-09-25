@@ -105,20 +105,36 @@ def approve(home, item_id, decided_by="user", apply_fn=None):
 
     apply_fn(item) flips the underlying domain record; it is optional.
     Returns the updated item.
+
+    The apply step is journaled for crash recovery (core/recovery.py):
+    the intent is logged BEFORE apply_fn runs and marked completed AFTER,
+    so a crash mid-apply can be verified and never blindly repeated.
     """
+    from core import recovery as _rec  # lazy: keeps module import-light
     items = _load(home)
     item = next((i for i in items if i["id"] == item_id), None)
     if item is None:
         raise KeyError(f"unknown approval item {item_id!r}")
     if item["status"] not in ("pending", "held", "rate_limited"):
         raise ValueError(f"item {item_id} is {item['status']}, not approvable")
-    if apply_fn is not None:
-        apply_fn(item)
+    jb = _rec.begin(home, item["type"], item_id,
+                    {"platform": item["platform"], "account": item["account"],
+                     "summary": item["summary"]})
+    if jb["duplicate"]:
+        raise ValueError(
+            f"item {item_id} already completed (idempotent) — refusing repeat")
+    try:
+        if apply_fn is not None:
+            apply_fn(item)
+    except Exception as e:
+        _rec.end(home, jb["id"], False, error=str(e))
+        raise
     item["status"] = "approved"
     item["decided_at"] = utcnow()
     item["decided_by"] = decided_by
     item["approved_at_ts"] = time.time()
     _save(home, items)
+    _rec.end(home, jb["id"], True, result=f"approved by {decided_by}")
     return item
 
 

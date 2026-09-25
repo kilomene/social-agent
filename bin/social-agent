@@ -69,6 +69,10 @@ from editor import qa as ed_qa
 from editor import thumbnails as ed_thumb
 from editor import camera as ed_camera
 from editor import compress as ed_compress
+from core import memory as mem_mod
+from core import backup as backup_mod
+from core import recovery as rec_mod
+from core import install as install_mod
 
 VERSION = "0.1.0"
 
@@ -194,7 +198,8 @@ def guard_acting(platform, action):
     if tos_class is None:
         raise Refused(f"no ToS classification for action {action!r}; refusing by default")
     try:
-        tos_mod.check_tos(platform, tos_class)
+        tos_mod.check_tos(platform, tos_class, policy=get_policy(),
+                          home=home_dir())
     except tos_mod.ToSRefusal as e:
         log_refusal(action, platform, "", f"ToS: {e}")
         raise
@@ -222,6 +227,17 @@ def log_refusal(action, platform, target, reason):
             "timestamp": utcnow(), "action": action, "platform": platform,
             "target": target, "reason": reason,
         }) + "\n")
+
+
+def _backup_trigger(trigger, files=(), note=""):
+    """Fire a backup snapshot. Never breaks the acting path: backup
+    failures are swallowed so a snapshot hiccup can't block real work."""
+    try:
+        snap = backup_mod.snapshot(home_dir(), trigger, files=files,
+                                   note=note)
+        return snap["id"]
+    except Exception:
+        return None
 
 
 # --------------------------------------- unified approval queue bridge ---
@@ -451,6 +467,8 @@ def cmd_accounts(args):
         print(f"added {args.username} [{args.platform}]"
               + (f" as {args.label!r}" if args.label else "")
               + " (no credentials stored)")
+        _backup_trigger("account_settings_changed", files=["accounts.json"],
+                        note=f"account {args.username}/{args.platform} added")
     elif args.op == "remove":
         before = len(accounts)
         accounts = [a for a in accounts
@@ -459,6 +477,8 @@ def cmd_accounts(args):
             raise UsageError(f"unknown account {args.ref!r}")
         save_json("accounts.json", accounts)
         print(f"removed {args.ref}")
+        _backup_trigger("account_settings_changed", files=["accounts.json"],
+                        note=f"account {args.ref} removed")
     elif args.op == "show":
         a = resolve_account(args.ref)
         adapter = get_adapter(a["platform"]).to_dict()
@@ -645,6 +665,8 @@ def cmd_post(args):
         })
         save_json("queue.json", queue)
         print(f"drafted post {pid} for {args.platform}/{acct['username']}")
+        _backup_trigger("post_created", files=["queue.json"],
+                        note=f"post {pid} drafted")
     elif args.op == "list":
         items = queue
         if args.status:
@@ -690,6 +712,8 @@ def cmd_post(args):
             # `post approve` IS the decision (explicit human, or auto via
             # mission/policy): approve the queue item immediately so the
             # queue stays the single audit trail.
+            backup_mod.recovery_point(
+                home_dir(), note=f"pre-publish recovery point for post {args.id}")
             try:
                 approvals_queue.approve(home_dir(), qitem["id"],
                                         apply_fn=_apply_approval,
@@ -1493,6 +1517,8 @@ def cmd_moderate(args):
                 reason="legacy hide proposal adopted into the unified queue",
                 ref={"store": "moderation.json", "id": m["id"]})
         try:
+            backup_mod.recovery_point(
+                home_dir(), note=f"pre hide-approval recovery point {args.id}")
             approvals_queue.approve(home_dir(), qitem["id"], apply_fn=_apply_approval,
                                     decided_by="user")
         except (KeyError, ValueError) as e:
@@ -1662,6 +1688,8 @@ def cmd_crisis(args):
         if not crisis_mod.is_active(home_dir()):
             print("crisis mode is already off")
             return
+        backup_mod.recovery_point(
+            home_dir(), note="pre crisis-off recovery point")
         st, released = crisis_mod.deactivate(home_dir(),
                                              release_fn=_crisis_release)
         cfg = hb.load_config()
@@ -1670,6 +1698,259 @@ def cmd_crisis(args):
         print(f"crisis mode OFF ({len(released)} held item(s) re-pended for approval):")
         for qid in released:
             print(f"  {qid} -> pending (re-approve with `approvals approve {qid}`)")
+
+
+# ------------------------------------------------------------------ memory ---
+
+def cmd_memory(args):
+    home = home_dir()
+    op = args.op
+    if op == "query":
+        try:
+            cols, rows = mem_mod.query_select(home, args.sql)
+        except ValueError as e:
+            raise UsageError(str(e))
+        if not rows:
+            print("(no rows)")
+            return
+        print(" | ".join(cols))
+        for r in rows:
+            print(" | ".join(str(r.get(c, "")) for c in cols))
+        print(f"{len(rows)} row(s)")
+    elif op == "remember":
+        did = mem_mod.log_decision(home, args.by, args.summary, args.why or "")
+        print(f"decision {did} recorded")
+    elif op == "recall":
+        items = mem_mod.list_decisions(home)
+        if not items:
+            print("no decisions recorded")
+            return
+        for d in items:
+            print(f"{d['id']} [{d['made_by']}] {d['summary']}")
+            if d.get("rationale"):
+                print(f"    why: {d['rationale']}")
+    elif op == "relate":
+        rel = mem_mod.relate(home, args.subject, args.predicate, args.object,
+                             meta=json.loads(args.meta) if args.meta else None)
+        print(f"remembered: {rel['subject']} --{rel['predicate']}--> {rel['object']}")
+    elif op == "graph":
+        edges = mem_mod.graph(home, args.entity)
+        if not edges:
+            print(f"nothing known about {args.entity}")
+            return
+        for e in edges:
+            print(f"{e['subject']} --{e['predicate']}--> {e['object']}")
+    elif op == "campaign":
+        if args.cop == "add":
+            cid = mem_mod.create_campaign(home, args.name, args.account or "",
+                                          args.goal or "")
+            print(f"campaign {cid}: {args.name}")
+        elif args.cop == "list":
+            for c in mem_mod.list_campaigns(home):
+                print(f"{c['id']} [{c['status']}] {c['name']}"
+                      f" ({c['account_label'] or 'any account'})"
+                      + (f" — goal: {c['goal']}" if c.get("goal") else ""))
+    elif op == "schedule":
+        if args.sop == "add":
+            sid = mem_mod.schedule_add(home, args.account or "", args.type,
+                                       args.run_at,
+                                       payload=json.loads(args.payload)
+                                       if args.payload else None,
+                                       recurrence=args.recurrence or "")
+            print(f"scheduled {sid}: {args.type} at {args.run_at}")
+        elif args.sop == "list":
+            for s in mem_mod.schedule_list(home):
+                print(f"{s['id']} [{s['status']}] {s['action_type']}"
+                      f" [{s['account_label']}] run_at={s['run_at']}")
+        elif args.sop == "done":
+            mem_mod.schedule_set_status(home, args.id, "done")
+            print(f"schedule item {args.id} marked done")
+    elif op == "content":
+        if args.top == "add":
+            cid = mem_mod.content_add(home, args.account or "", args.kind,
+                                      args.title, file_path=args.file or "",
+                                      caption=args.caption or "",
+                                      campaign_id=args.campaign)
+            print(f"content {cid}: {args.title} [{args.kind}]")
+        elif args.top == "list":
+            for c in mem_mod.content_list(home, args.account or None):
+                print(f"{c['id']} [{c['status']}] {c['kind']}: {c['title']}"
+                      + (f" (campaign {c['campaign_id']})"
+                         if c.get("campaign_id") else ""))
+    elif op == "voice":
+        if args.vop == "set":
+            v = mem_mod.set_brand_voice(
+                home, args.account, tone_profile=args.tone or "",
+                banned=(args.banned or "").split(",") if args.banned else [],
+                dos=(args.dos or "").split(",") if args.dos else [],
+                donts=(args.donts or "").split(",") if args.donts else [])
+            print(f"brand voice saved for {args.account}")
+            print(f"  tone: {v['tone_profile']}")
+        elif args.vop == "show":
+            v = mem_mod.get_brand_voice(home, args.account)
+            if not v:
+                print(f"no brand voice recorded for {args.account}")
+                return
+            print(f"tone: {v['tone_profile']}")
+            print(f"banned: {v['banned_terms_json']}")
+            print(f"dos: {v['dos_json']}")
+            print(f"donts: {v['donts_json']}")
+    elif op == "account":
+        if args.aop == "add":
+            a = mem_mod.upsert_account(home, args.label, args.platform,
+                                       handle=args.handle or "",
+                                       brand=args.brand or "")
+            print(f"memory account: {a['label']} [{a['platform']}]"
+                  + (f" @{a['handle']}" if a.get("handle") else ""))
+        elif args.aop == "list":
+            for a in mem_mod.list_accounts(home):
+                print(f"{a['label']} [{a['platform']}]"
+                      + (f" @{a['handle']}" if a.get("handle") else "")
+                      + f" status={a['status']}")
+    elif op == "sop":
+        if args.sopop == "add":
+            sid, ver = mem_mod.sop_add(home, args.title, args.body or "")
+            print(f"SOP {sid} saved: {args.title} (v{ver})")
+        elif args.sopop == "list":
+            for s in mem_mod.sop_list(home):
+                print(f"{s['id']} v{s['version']} {s['title']}")
+        elif args.sopop == "show":
+            s = mem_mod.sop_get(home, args.id)
+            if not s:
+                raise UsageError(f"unknown SOP {args.id}")
+            print(f"# {s['title']} (v{s['version']})")
+            print(s["body_md"])
+
+
+# ------------------------------------------------------------------ backup ---
+
+def cmd_backup(args):
+    home = home_dir()
+    if args.op == "list":
+        snaps = backup_mod.list_snapshots(home)
+        if not snaps:
+            print("no snapshots yet")
+            return
+        for m in snaps:
+            nfiles = len(m.get("files", []))
+            print(f"{m['id']} [{m['trigger']}] {m['timestamp']}"
+                  f" files={nfiles}"
+                  + (f" — {m['note']}" if m.get("note") else ""))
+    elif args.op == "snapshot":
+        files = [f.strip() for f in (args.files or "").split(",") if f.strip()]
+        m = backup_mod.snapshot(home, args.trigger, files=files,
+                                note=args.note or "")
+        print(f"snapshot {m['id']} [{args.trigger}] ({len(m['files'])} files)")
+    elif args.op == "diff":
+        d = backup_mod.diff(home, args.id1, args.id2)
+        print(f"diff {d['from']} -> {d['to']}")
+        for p in d["added"]:
+            print(f"  + {p}")
+        for p in d["removed"]:
+            print(f"  - {p}")
+        for p in d["changed"]:
+            print(f"  ~ {p}")
+        for t in d["memory_tables_changed"]:
+            print(f"  ~ memory table: {t}")
+        if not (d["added"] or d["removed"] or d["changed"] or
+                d["memory_tables_changed"]):
+            print("  (no differences)")
+    elif args.op == "restore":
+        if args.apply:
+            plan = backup_mod.restore(home, args.id, dry_run=False)
+            print(f"staged to {plan['staged_to']}")
+            print("Review the staging dir, then copy files into place"
+                  " yourself. Live files were NOT touched.")
+        else:
+            plan = backup_mod.restore(home, args.id, dry_run=True)
+        for c in plan["changes"]:
+            print(f"  {c['action']}: {c['path']}")
+        if not args.apply:
+            print("dry-run only. Re-run with --apply to stage the restore.")
+
+
+# ----------------------------------------------------------------- recover ---
+
+def cmd_recover(args):
+    report = rec_mod.recover(home_dir(), execute=args.execute)
+    print(rec_mod.format_report(report))
+
+
+# ---------------------------------------------------------------- browser ---
+
+def cmd_browser(args):
+    from browser import session as _sess
+    from browser.driver import BROWSER_OK
+    from platforms.browser import backend as _backend
+    home = home_dir()
+    if args.op == "status":
+        print(f"engine: {'playwright' if BROWSER_OK else 'NOT INSTALLED (see browser/SETUP.md)'}")
+        print("backend default: browser (config: platforms.<name>.backend)")
+        import os as _os
+        adir = _os.path.join(home, "accounts")
+        labels = sorted(_os.listdir(adir)) if _os.path.isdir(adir) else []
+        if not labels:
+            print("no account browser profiles yet — `browser login --account <label> --platform <p>`")
+            return
+        for label in labels:
+            info = _sess.load_session(home, label) or {}
+            prof = _os.path.isdir(_sess.profile_dir(home, label))
+            print(f"{label}: platform={info.get('platform', '?')}"
+                  f" status={info.get('status', '?')} profile={'yes' if prof else 'no'}")
+    elif args.op == "login":
+        if args.platform not in SUPPORTED_PLATFORMS:
+            raise UsageError(f"unknown platform {args.platform!r}")
+        res = _sess.open_login_session(home, args.account, args.platform,
+                                       headed=not args.headless,
+                                       simulate=args.simulate)
+        print(res["instructions"])
+        print("(Close the browser window when you've signed in.)")
+        res["driver"].stop()
+    elif args.op == "open":
+        sess = _sess.open_reuse_session(home, args.account,
+                                        headed=not args.headless,
+                                        simulate=args.simulate)
+        print(f"opened persistent profile for '{args.account}'"
+              f" ({'simulated' if args.simulate else 'real browser'}).")
+        print("Close with Ctrl-C; the profile persists.")
+        try:
+            import time as _t
+            while True:
+                _t.sleep(3600)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            sess["driver"].stop()
+    elif args.op == "act":
+        if args.platform not in SUPPORTED_PLATFORMS:
+            raise UsageError(f"unknown platform {args.platform!r}")
+        params = {}
+        if args.target:
+            params["target_url"] = args.target
+        if args.thread:
+            params["thread_url"] = args.thread
+        if args.text:
+            params["text"] = args.text
+        if args.file:
+            params["video_path"] = args.file
+            params["photo_path"] = args.file
+            params["file"] = args.file
+        if args.title:
+            params["title"] = args.title
+        try:
+            res = _backend.act(home, args.platform, args.account, args.action,
+                               params=params, policy=get_policy(),
+                               simulate=args.simulate,
+                               headed=not args.headless)
+        except Exception as e:
+            raise Refused(str(e))
+        print(f"browser act {args.action} [{args.platform}/{args.account}]:"
+              f" {'OK' if res['ok'] else 'FAILED'}"
+              f" ({len(res['steps'])} steps)")
+        tos = res.get("tos") or {}
+        if tos.get("acknowledged_risk"):
+            print("NOTE: proceeded under tos.acknowledged_risk"
+                  " (see the advisory above and audit/tos_acknowledgments.jsonl)")
 
 
 # ----------------------------------------------------------------- listen ---
@@ -1849,6 +2130,8 @@ def cmd_video(args):
         vff.run_cmd(argv, dry_run=dry)
         if not dry:
             print(f"exported [{meta['resolution']}/{meta['codec']}] -> {args.output}")
+            _backup_trigger("video_rendered", files=[args.output],
+                            note=f"video export -> {args.output}")
     elif args.op == "plan":
         if args.pop == "create":
             steps = json.loads(args.steps)
@@ -2073,11 +2356,17 @@ def cmd_editor(args):
             for j in jobs:
                 print(f"{j['name']:20s} {j['state']:12s} attempts={j['attempts']}")
         elif args.qop == "run":
+            done_count = 0
             for r in ed_batch.queue_run(home_dir(), name=args.name,
                                         resume=args.resume, dry_run=dry):
                 print(f"{r['job']}: {r['state']}"
                       + (f" ({r['error']})" if r.get("error") else "")
                       + (f" — {r['note']}" if r.get("note") else ""))
+                if r.get("state") == "done":
+                    done_count += 1
+            if done_count and not dry:
+                _backup_trigger("video_rendered", files=["render_queue.json"],
+                                note=f"render queue finished {done_count} job(s)")
     elif op == "qa":
         _require_ffmpeg()
         res = ed_qa.verify(args.input, srt_path=args.srt)
@@ -2143,6 +2432,8 @@ def cmd_editor(args):
         vff.run_cmd(argv, dry_run=dry)
         if not dry:
             print(f"exported [{meta['resolution']}/{meta['codec']}] -> {args.output}")
+            _backup_trigger("video_rendered", files=[args.output],
+                            note=f"editor export -> {args.output}")
     elif op == "motion":
         if args.mop == "lower-third":
             p_ = ed_motion.lower_third(args.text, subtext=args.subtext or "",
@@ -2214,6 +2505,29 @@ def cmd_doctor(args):
     nfx = len([f for f in os.listdir(fx) if f.endswith(".json")]) if os.path.isdir(fx) else 0
     check("sample fixtures", nfx > 0, f"{nfx} fixture files")
     check("credentials stored in repo", False, "good: none (by design)")
+    try:
+        mem_mod.init_db(home_dir())
+        ver = mem_mod.schema_version(home_dir())
+        check("permanent memory (memory.db)", ver >= mem_mod.SCHEMA_VERSION,
+              f"schema v{ver} at {mem_mod.db_path(home_dir())}")
+    except Exception as e:
+        check("permanent memory (memory.db)", False, str(e))
+    try:
+        unf = rec_mod.unfinished(home_dir())
+        stale = rec_mod.stale_runner(home_dir())
+        detail = f"{len(unf)} unfinished journal entr" + \
+            ("ies" if len(unf) != 1 else "y")
+        if stale:
+            detail += f"; UNCLEAN SHUTDOWN ({stale['reason']}) — run `recover`"
+        # informational: never fails doctor
+        check("action journal", True, detail)
+    except Exception as e:
+        check("action journal", False, str(e))
+    snaps = backup_mod.list_snapshots(home_dir())
+    check("backup snapshots", True,
+          f"{len(snaps)} snapshot(s)"
+          + (f", latest {snaps[0]['id']}" if snaps else ""))
+    check("crash recovery module", True, "recover --help")
     try:
         import missions as _m  # noqa: F401
         check("missions module", True, _m.missions_dir())
@@ -2618,6 +2932,133 @@ def build_parser():
     li.add_argument("--watchers", default=None,
                     help="comma-separated watcher ids (default: all listen types)")
     li.set_defaults(func=cmd_listen, op="once")
+
+    me = sub.add_parser("memory", help="permanent memory: the agent's brain")
+    me_sub = me.add_subparsers(dest="op", required=True)
+    p = me_sub.add_parser("query", help="read-only SELECT against memory.db")
+    p.add_argument("sql", help="SELECT statement (only SELECT is allowed)")
+    p = me_sub.add_parser("remember", help="record a decision and its why")
+    p.add_argument("summary", help="the decision")
+    p.add_argument("--by", default="user", help="who decided (default: user)")
+    p.add_argument("--why", default="", help="rationale")
+    me_sub.add_parser("recall", help="list recorded decisions")
+    p = me_sub.add_parser("relate", help="add a relationship-graph edge")
+    p.add_argument("subject", help="type:id, e.g. follower:ada")
+    p.add_argument("predicate", help="e.g. frequent_customer_of")
+    p.add_argument("object", help="type:id, e.g. brand:nova")
+    p.add_argument("--meta", default="", help="JSON metadata")
+    p = me_sub.add_parser("graph", help="show edges touching an entity")
+    p.add_argument("entity", help="type:id, e.g. brand:nova")
+    mc = me_sub.add_parser("campaign", help="campaigns")
+    mc_sub = mc.add_subparsers(dest="cop", required=True)
+    p = mc_sub.add_parser("add", help="create a campaign")
+    p.add_argument("name")
+    p.add_argument("--account", default="")
+    p.add_argument("--goal", default="")
+    mc_sub.add_parser("list", help="list campaigns")
+    ms = me_sub.add_parser("schedule", help="posting schedule")
+    ms_sub = ms.add_subparsers(dest="sop", required=True)
+    p = ms_sub.add_parser("add", help="schedule an action")
+    p.add_argument("--account", default="")
+    p.add_argument("type", help="action type, e.g. publish_post")
+    p.add_argument("run_at", help="ISO timestamp to run at")
+    p.add_argument("--payload", default="", help="JSON payload")
+    p.add_argument("--recurrence", default="")
+    ms_sub.add_parser("list", help="list scheduled items")
+    p = ms_sub.add_parser("done", help="mark a scheduled item done")
+    p.add_argument("id", type=int)
+    mt = me_sub.add_parser("content", help="content library")
+    mt_sub = mt.add_subparsers(dest="top", required=True)
+    p = mt_sub.add_parser("add", help="register a content item")
+    p.add_argument("--account", default="")
+    p.add_argument("kind", help="video|image|text|audio")
+    p.add_argument("title")
+    p.add_argument("--file", default="")
+    p.add_argument("--caption", default="")
+    p.add_argument("--campaign", type=int, default=None)
+    p = mt_sub.add_parser("list", help="list content items")
+    p.add_argument("--account", default="")
+    mv = me_sub.add_parser("voice", help="per-account brand voice")
+    mv_sub = mv.add_subparsers(dest="vop", required=True)
+    p = mv_sub.add_parser("set", help="set brand voice")
+    p.add_argument("account")
+    p.add_argument("--tone", default="")
+    p.add_argument("--banned", default="", help="comma-separated banned terms")
+    p.add_argument("--dos", default="", help="comma-separated dos")
+    p.add_argument("--donts", default="", help="comma-separated don'ts")
+    p = mv_sub.add_parser("show", help="show brand voice")
+    p.add_argument("account")
+    ma = me_sub.add_parser("account", help="accounts in permanent memory")
+    ma_sub = ma.add_subparsers(dest="aop", required=True)
+    p = ma_sub.add_parser("add", help="register an account")
+    p.add_argument("label")
+    p.add_argument("platform")
+    p.add_argument("--handle", default="")
+    p.add_argument("--brand", default="")
+    ma_sub.add_parser("list", help="list accounts")
+    msp = me_sub.add_parser("sop", help="standard operating procedures")
+    msp_sub = msp.add_subparsers(dest="sopop", required=True)
+    p = msp_sub.add_parser("add", help="add an SOP (new version if title exists)")
+    p.add_argument("title")
+    p.add_argument("--body", default="", help="markdown body")
+    msp_sub.add_parser("list", help="list SOPs")
+    p = msp_sub.add_parser("show", help="show an SOP")
+    p.add_argument("id", type=int)
+    me.set_defaults(func=cmd_memory)
+
+    bk = sub.add_parser("backup", help="content-addressed backups of the agent's life")
+    bk_sub = bk.add_subparsers(dest="op", required=True)
+    bk_sub.add_parser("list", help="list snapshots")
+    p = bk_sub.add_parser("snapshot", help="take a manual snapshot")
+    p.add_argument("--trigger", default="manual",
+                   choices=("manual", "post_created", "video_rendered",
+                            "account_settings_changed", "memory_updated",
+                            "risky_action"))
+    p.add_argument("--files", default="", help="comma-separated home-relative paths")
+    p.add_argument("--note", default="")
+    p = bk_sub.add_parser("diff", help="compare two snapshots")
+    p.add_argument("id1")
+    p.add_argument("id2")
+    p = bk_sub.add_parser("restore", help="restore a snapshot (dry-run by default)")
+    p.add_argument("id", help="snapshot id")
+    p.add_argument("--apply", action="store_true",
+                   help="stage the restore (never overwrites live files)")
+    bk.set_defaults(func=cmd_backup)
+
+    rc = sub.add_parser("recover", help="crash recovery: replay the action journal")
+    rc.add_argument("--execute", action="store_true",
+                    help="re-execute safe local work (renders); platform actions "
+                         "are never auto-executed")
+    rc.set_defaults(func=cmd_recover)
+
+    br = sub.add_parser("browser", help="persistent browser automation (no APIs)")
+    br_sub = br.add_subparsers(dest="op", required=True)
+    br_sub.add_parser("status", help="engine availability + account profiles")
+    p = br_sub.add_parser("login", help="headed first-time login (you sign in)")
+    p.add_argument("--account", required=True)
+    p.add_argument("--platform", required=True)
+    p.add_argument("--headless", action="store_true")
+    p.add_argument("--simulate", action="store_true",
+                   help="offline simulated browser (tests/dry runs)")
+    p = br_sub.add_parser("open", help="open the persistent profile (watch/debug)")
+    p.add_argument("--account", required=True)
+    p.add_argument("--headless", action="store_true")
+    p.add_argument("--simulate", action="store_true")
+    p = br_sub.add_parser("act", help="run one browser-backed platform action")
+    p.add_argument("--account", required=True)
+    p.add_argument("--platform", required=True)
+    p.add_argument("--action", required=True,
+                   help="like|comment|follow|unfollow|post_text|post_video|"
+                        "dm_send|hide_comment|subscribe|upload_video|post_photo")
+    p.add_argument("--target", default="", help="target URL (post/profile)")
+    p.add_argument("--thread", default="", help="DM thread URL")
+    p.add_argument("--text", default="", help="comment/post/DM text")
+    p.add_argument("--file", default="", help="media file for upload actions")
+    p.add_argument("--title", default="", help="title for upload/post actions")
+    p.add_argument("--headless", action="store_true")
+    p.add_argument("--simulate", action="store_true",
+                   help="offline simulated browser (tests/dry runs)")
+    br.set_defaults(func=cmd_browser)
 
     cap = sub.add_parser("caption", help="platform-optimized caption generator")
     cap_sub = cap.add_subparsers(dest="op", required=True)

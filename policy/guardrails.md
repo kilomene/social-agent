@@ -370,3 +370,100 @@ only acting pauses.
   pending approval can't fire under crisis, no auto-policy or mission can
   override a ToS prohibition, and an exhausted bucket still refuses an
   approved action until its retry time.
+
+## 26. Permanent memory, automatic backups, crash recovery, installer
+
+The agent has a durable brain and a safety net. All of it lives in the
+agent's own home directory (default `~/.social-agent`; one install =
+one isolated brain via `./install.sh` → `~/SocialAgent/`).
+
+- **Permanent memory** (`core/memory.py`, `<home>/memory.db`, SQLite,
+  stdlib-only). Tables: accounts, brand_voice, people, campaigns,
+  schedule, content, performance, decisions, sops, relations. Schema
+  migrations run automatically (`schema_migrations`). `memory query`
+  is **SELECT-only**, enforced in code plus `PRAGMA query_only`. The
+  old `people/*.json` store is imported once into SQLite on first access
+  and archived to `people_legacy_<ts>/`; `people top/show/note/tag/untag`
+  keep working unchanged. Decisions (`memory remember/recall`), the
+  relationship graph (`memory relate` with `type:id` refs — brand owns
+  account, follower frequent_customer_of brand, hashtag performs_well_on
+  Friday, video belongs_to campaign — plus `memory graph`), campaigns,
+  posting schedule, content library, brand voice, and versioned SOPs
+  (`memory sop add/list/show`) are all here. Postgres is the documented
+  scale-up path (`core/POSTGRES.md`); the DSN comes from the environment,
+  never from the repo.
+- **Automatic backups** (`core/backup.py`, `<home>/backups/`):
+  content-addressed snapshots — manifests + deduped blobs, "git for the
+  agent's life". Triggers fire on real events: post created → version the
+  draft; video rendered → save the output manifest; account settings
+  changed → snapshot accounts.json; every memory mutation → incremental
+  (skipped when table hashes didn't change); before risky actions
+  (publish, hide-approve, crisis off) → recovery point. Retention
+  (`policy.yaml backups:`): keep the last N hourly + one per day for M
+  days, then prune and garbage-collect orphan blobs. `backup list /
+  snapshot / diff`. Restore **never overwrites live files**: `backup
+  restore <id>` is a dry-run plan by default; `--apply` only *stages*
+  into `backups/restore_staging/<id>/` — the operator copies files into
+  place by hand.
+- **Crash recovery** (`core/recovery.py`, `<home>/audit/journal.jsonl`):
+  every acting intent is logged BEFORE execution with an idempotency key
+  (sha256 of action type + target + canonical payload) and marked
+  completed/failed AFTER. `approvals_queue.approve` journals the apply
+  step centrally. After a crash, `social-agent recover` (suggested by
+  `doctor` when it sees a stale `audit/runner.pid`) loads the latest
+  snapshot, replays the journal, and **verifies each unfinished intent
+  against real state before deciding**: an intent that actually completed
+  is marked completed and SKIPPED — never repeated (this is what prevents
+  duplicate posts). Safe local work (renders) can re-execute with
+  `recover --execute` (verifies output exists first); platform-acting
+  intents are NEVER auto-executed — they are reported for human
+  re-approval. Unverifiable intents go to the human too.
+- **Installer** (`./install.sh`, `core/install.py`): creates
+  `memory.db`, `backups/`, `audit/`, `projects/`, `accounts/`, `cache/`
+  under `~/SocialAgent/` (or `$SOCIAL_AGENT_HOME` / `--home`). Idempotent
+  (re-runs top up missing pieces); refuses to touch a non-empty foreign
+  directory without `--force`. `doctor` checks memory schema, journal
+  health, snapshot count, and stale runner locks (informational — never
+  fails the run).
+
+## 27. Persistent browser automation (no APIs) + ToS acknowledged risk
+
+All six platforms (Facebook, Instagram, X, YouTube, Reddit, TikTok) are
+driven through a **persistent real browser** (Playwright/Chromium) — no
+APIs, no API keys. Per-account profiles live at
+`<home>/accounts/<label>/browser-profile/`; logins/cookies survive
+restarts like a person's own browser. `browser login <account>` opens a
+**headed** session for first-time manual sign-in (the human signs in; the
+agent never sees the password). 2FA/challenge → the agent **pauses,
+notifies the user, and waits** — it never attempts a bypass.
+
+Every browser action is human-paced (randomized delays,
+scroll-before-click, configured active hours) and routed through the
+**central rate-limit controller** — the browser is a backend, not a
+bypass. Every primitive is journaled with an idempotency key, so a
+crashed browser session resumes instead of repeating a post. Per-platform
+recipes live in `platforms/browser/` (selectors, login notes, quirks);
+**selectors rot** — they are a maintenance surface with a re-check
+discipline (`LAST_VERIFIED` per recipe). Backend selection:
+`platforms.<name>.backend: browser` (default) or `api` (config option;
+nothing in this repo requires keys).
+
+**ToS acknowledged risk — handled honestly.** The ToS layer still fails
+closed by default: e.g. X browser-driven likes/comments/follows/DMs are
+`prohibited` because X's terms require API-only automation. The user may
+explicitly opt a platform in via `policy.yaml`:
+
+```yaml
+tos:
+  acknowledged_risk: [x]
+```
+
+For a listed platform ONLY, a prohibition downgrades to `restricted`
+with a **loud, logged advisory** (stderr +
+`audit/tos_acknowledgments.jsonl`) stating the plain risk — account
+suspension/ban per that platform's terms. Without the acknowledgment,
+the prohibition stands; the agent never silently violates terms. The
+risk is the **user's informed choice**, and the agent records it. This
+sits at the very top of the guard order: **ToS (incl. acknowledged-risk)
+> crisis > approvals > rate limits > quiet hours** — nothing below can
+grant what ToS refuses. Docs: `docs/browser-ops.md`, `browser/SETUP.md`.

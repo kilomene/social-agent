@@ -40,6 +40,35 @@ def state(home, name, default=None):
         return json.load(fh)
 
 
+def people_state(home, account):
+    """People memory in its legacy JSON shape (now served from memory.db)."""
+    import sqlite3
+    db = os.path.join(home, "memory.db")
+    if not os.path.exists(db):
+        return {}
+    cx = sqlite3.connect(db)
+    cx.row_factory = sqlite3.Row
+    out = {}
+    try:
+        for r in cx.execute("SELECT * FROM people WHERE account_label = ?",
+                            (account,)):
+            d = dict(r)
+            out[d["handle"]] = {
+                "handle": d["handle"],
+                "counts": json.loads(d["interactions_json"] or "{}"),
+                "first_seen": d["first_seen"], "last_seen": d["last_seen"],
+                "tags": json.loads(d["tags_json"] or "[]"),
+                "notes": json.loads(d["notes_json"] or "[]"),
+                "sentiments": json.loads(d["sentiments_json"] or "[]"),
+                "conversations": json.loads(d["conversations_json"] or "[]"),
+                "last_text": d["last_text"] or "",
+                "score": d["score"],
+            }
+    finally:
+        cx.close()
+    return out
+
+
 class Exam:
     def __init__(self, name, desc):
         self.name = name
@@ -1062,7 +1091,7 @@ def exam_47_people_memory_top_fans():
     r = run(home, None, "listen", "once")
     ex.check("listen pass completes", r.returncode == 0 and
              "listen pass complete" in r.stdout, r.stdout.strip()[-80:])
-    people = state(home, "people/examuser.json", {})
+    people = people_state(home, "examuser")
     ex.check("commenter remembered", "curious_cat" in people, str(sorted(people))[:120])
     ex.check("DM sender remembered with dm count",
              people.get("fan_two", {}).get("counts", {}).get("dm") == 1,
@@ -1172,10 +1201,332 @@ def exam_50_listen_once_routes_events():
     ex.check("DM raised a user notification",
              any(n.get("kind") == "dm" for n in notes),
              str([(n.get("kind")) for n in notes])[:80])
-    people = state(home, "people/examuser.json", {})
+    people = people_state(home, "examuser")
     ex.check("notification actors recorded",
              "fan_one" in people and "new_follower" in people,
              str(sorted(people))[:120])
+    return ex
+
+
+def exam_51_memory_round_trip():
+    ex = Exam("exam-51", "Permanent memory: accounts, decisions, SOPs, SELECT-only query")
+    home = fresh_home()
+    r = run(home, None, "memory", "account", "add", "exam", "tiktok",
+            "--handle", "examuser")
+    ex.check("memory account add exits 0", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "memory", "remember", "post daily", "--by", "user",
+            "--why", "consistency compounds")
+    ex.check("remember records a decision", r.returncode == 0 and
+             "recorded" in r.stdout, r.stdout.strip()[:80])
+    r = run(home, None, "memory", "recall")
+    ex.check("recall lists the decision with its why",
+             "post daily" in r.stdout and "consistency compounds" in r.stdout,
+             r.stdout.strip()[:120])
+    r = run(home, None, "memory", "sop", "add", "weekly review",
+            "--body", "# review\n1. check stats")
+    ex.check("sop add exits 0", r.returncode == 0, r.stdout.strip()[:80])
+    r = run(home, None, "memory", "sop", "list")
+    ex.check("sop list shows the SOP", "weekly review" in r.stdout,
+             r.stdout.strip()[:80])
+    r = run(home, None, "memory", "query", "SELECT label, platform FROM accounts")
+    ex.check("SELECT query returns the account",
+             "exam" in r.stdout and "tiktok" in r.stdout, r.stdout.strip()[:80])
+    r = run(home, None, "memory", "query", "DROP TABLE accounts")
+    ex.check("non-SELECT refused", r.returncode != 0, r.stderr.strip()[:80])
+    r = run(home, None, "memory", "query", "SELECT 1; SELECT 2")
+    ex.check("multi-statement refused", r.returncode != 0, r.stderr.strip()[:80])
+    return ex
+
+
+def exam_52_memory_relations_graph():
+    ex = Exam("exam-52", "Memory relationship graph: relate + graph")
+    home = fresh_home()
+    run(home, None, "memory", "relate", "brand:nova", "owns", "account:exam")
+    run(home, None, "memory", "relate", "follower:ada", "frequent_customer_of",
+        "brand:nova")
+    run(home, None, "memory", "relate", "video:v1", "belongs_to", "campaign:c1")
+    r = run(home, None, "memory", "graph", "brand:nova")
+    ex.check("graph shows brand owns account",
+             "brand:nova --owns--> account:exam" in r.stdout, r.stdout.strip()[:120])
+    ex.check("graph shows inbound follower edge",
+             "follower:ada --frequent_customer_of--> brand:nova" in r.stdout,
+             r.stdout.strip()[:120])
+    r = run(home, None, "memory", "graph", "video:v1")
+    ex.check("graph shows video belongs to campaign",
+             "video:v1 --belongs_to--> campaign:c1" in r.stdout,
+             r.stdout.strip()[:120])
+    # idempotent relate: no duplicate edge
+    run(home, None, "memory", "relate", "brand:nova", "owns", "account:exam")
+    r = run(home, None, "memory", "graph", "brand:nova")
+    ex.check("re-relate does not duplicate the edge",
+             r.stdout.count("--owns-->") == 1, r.stdout.strip()[:120])
+    return ex
+
+
+def exam_53_backup_on_post_create():
+    ex = Exam("exam-53", "Automatic backup: post draft snapshots, manual snapshot + diff")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+        "--text", "sora ai video tutorial part 53", "--id", "ep53")
+    r = run(home, None, "backup", "list")
+    ex.check("post_created snapshot exists",
+             "post_created" in r.stdout, r.stdout.strip()[:120])
+    snaps_before = len([l for l in r.stdout.splitlines() if l.startswith("snap-")])
+    r = run(home, None, "backup", "snapshot", "--files", "queue.json",
+            "--note", "manual checkpoint")
+    ex.check("manual snapshot exits 0", r.returncode == 0 and "snapshot" in r.stdout,
+             r.stdout.strip()[:80])
+    snap_id = r.stdout.split()[1]
+    run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+        "--text", "second post for diff", "--id", "ep53b")
+    r2 = run(home, None, "backup", "snapshot", "--files", "queue.json")
+    snap2 = r2.stdout.split()[1]
+    r = run(home, None, "backup", "diff", snap_id, snap2)
+    ex.check("diff shows queue.json changed", "~ queue.json" in r.stdout,
+             r.stdout.strip()[:120])
+    r = run(home, None, "backup", "list")
+    ex.check("snapshot count grew",
+             len([l for l in r.stdout.splitlines()
+                  if l.startswith("snap-")]) > snaps_before,
+             f"{snaps_before} -> ...")
+    return ex
+
+
+def exam_54_risky_action_recovery_point():
+    ex = Exam("exam-54", "Risky actions take a recovery point before executing")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+        "--text", "sora ai video tutorial part 54", "--id", "ep54")
+    run(home, None, "post", "queue", "ep54")
+    r = run(home, None, "backup", "list")
+    risky_before = r.stdout.count("risky_action")
+    r = run(home, None, "post", "approve", "ep54")
+    ex.check("post approve exits 0", r.returncode == 0, r.stderr.strip()[:80])
+    r = run(home, None, "backup", "list")
+    ex.check("risky_action recovery point taken before publish",
+             r.stdout.count("risky_action") > risky_before,
+             r.stdout.strip()[:160])
+    # journal recorded the approval intent and its completion
+    import pathlib
+    journal = os.path.join(home, "audit", "journal.jsonl")
+    entries = [json.loads(l) for l in
+               pathlib.Path(journal).read_text().splitlines() if l.strip()]
+    pub = [e for e in entries if e.get("action_type") == "publish"]
+    ex.check("journal logged the publish intent",
+             len(pub) >= 1, str(len(pub)))
+    ex.check("journal marked it completed",
+             any(e["status"] == "completed" for e in pub),
+             str([(e["status"]) for e in pub])[:80])
+    # crisis off also takes a recovery point
+    run(home, None, "crisis", "on", "--reason", "exam 54")
+    r = run(home, None, "backup", "list")
+    risky_before_off = r.stdout.count("risky_action")
+    run(home, None, "crisis", "off")
+    r = run(home, None, "backup", "list")
+    ex.check("crisis off takes a recovery point",
+             r.stdout.count("risky_action") > risky_before_off,
+             r.stdout.strip()[:160])
+    return ex
+
+
+def exam_55_restore_dry_run_safety():
+    ex = Exam("exam-55", "Restore is dry-run by default and stages, never overwrites")
+    home = fresh_home()
+    setup_account(home)
+    p = os.path.join(home, "notes.txt")
+    with open(p, "w") as fh:
+        fh.write("version one")
+    r = run(home, None, "backup", "snapshot", "--files", "notes.txt",
+            "--note", "v1")
+    snap_id = r.stdout.split()[1]
+    with open(p, "w") as fh:
+        fh.write("version two")
+    r = run(home, None, "backup", "restore", snap_id)
+    ex.check("dry-run restore exits 0", r.returncode == 0, r.stderr.strip()[:80])
+    ex.check("dry-run plan shows would-overwrite",
+             "would-overwrite" in r.stdout, r.stdout.strip()[:120])
+    ex.check("live file untouched by dry-run",
+             open(p).read() == "version two", open(p).read())
+    r = run(home, None, "backup", "restore", snap_id, "--apply")
+    ex.check("apply stages the restore", r.returncode == 0 and
+             "staged to" in r.stdout, r.stdout.strip()[:120])
+    stage = os.path.join(home, "backups", "restore_staging", snap_id,
+                         "notes.txt")
+    ex.check("staged file holds the old version",
+             os.path.isfile(stage) and open(stage).read() == "version one",
+             stage)
+    ex.check("live file STILL untouched after apply",
+             open(p).read() == "version two", open(p).read())
+    return ex
+
+
+def exam_56_crash_recovery_skip_and_resume():
+    ex = Exam("exam-56", "Crash recovery: already-done intents are skipped, never repeated")
+    home = fresh_home()
+    setup_account(home)
+    # a completed publish: approve via queue (journals the intent)
+    run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+        "--text", "sora ai video tutorial part 56", "--id", "ep56")
+    run(home, None, "post", "queue", "ep56")
+    run(home, None, "post", "approve", "ep56")
+    # simulate a crash: inject a stale 'started' journal entry for the same
+    # publish (as if the process died between apply and journal end)
+    sys.path.insert(0, REPO)
+    from core import recovery as _rec
+    jb = _rec.begin(home, "publish", "ep56", {"platform": "tiktok"})
+    ex.check("crash residue is unfinished", len(_rec.unfinished(home)) >= 1,
+             str(len(_rec.unfinished(home))))
+    r = run(home, None, "recover")
+    ex.check("recover exits 0", r.returncode == 0, r.stderr.strip()[:80])
+    ex.check("already-done publish is SKIPPED, not repeated",
+             "SKIP (already done)" in r.stdout, r.stdout.strip()[:160])
+    ex.check("no duplicate post created",
+             len([q for q in state(home, "queue.json", [])
+                  if q.get("id") == "ep56"]) == 1,
+             str([q.get("id") for q in state(home, "queue.json", [])])[:80])
+    r = run(home, None, "recover")
+    ex.check("second recover is clean", "journal is clean" in r.stdout,
+             r.stdout.strip()[:120])
+    # idempotency: beginning the same intent again is a duplicate
+    jb2 = _rec.begin(home, "publish", "ep56", {"platform": "tiktok"})
+    ex.check("repeat of completed intent refused as duplicate",
+             jb2["duplicate"] is True, str(jb2.get("duplicate")))
+    return ex
+
+
+def write_browser_policy(path, ack=()):
+    """Minimal policy for browser exams: generous rate limits, ack list."""
+    lines = ["version: 1", "defaults:", '  mode: "propose"',
+             "rate_limits:", "  default:",
+             "    actions_per_hour: 1000", "    actions_per_day: 10000",
+             "quiet_hours:", "  enabled: false",
+             "browser:", "  active_hours:", "    enabled: false",
+             "platforms:"]
+    for p in ("tiktok", "x", "instagram", "facebook", "youtube", "reddit"):
+        lines += [f"  {p}:", "    backend: browser"]
+    lines += ["tos:", "  acknowledged_risk:"]
+    for p in ack:
+        lines.append(f"    - {p}")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path
+
+
+def exam_57_browser_x_refused_without_ack():
+    ex = Exam("exam-57", "Browser action on X refused without acknowledged_risk")
+    home = fresh_home()
+    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
+    r = run(home, pol, "browser", "login", "--account", "main",
+            "--platform", "x", "--simulate")
+    ex.check("simulated login exits 0", r.returncode == 0,
+             r.stderr.strip()[:80])
+    r = run(home, pol, "browser", "act", "--account", "main",
+            "--platform", "x", "--action", "like",
+            "--target", "https://x.com/s/57", "--simulate")
+    ex.check("X like refused (exit 2)", r.returncode == 2,
+             f"exit={r.returncode}")
+    ex.check("refusal names the ToS prohibition",
+             "ToS refusal" in r.stderr and "prohibited" in r.stderr,
+             r.stderr.strip()[:120])
+    ex.check("no advisory logged without acknowledgment",
+             not os.path.exists(
+                 os.path.join(home, "audit", "tos_acknowledgments.jsonl")))
+    return ex
+
+
+def exam_58_browser_x_proceeds_with_ack():
+    ex = Exam("exam-58", "With tos.acknowledged_risk:[x], X proceeds + loud advisory")
+    home = fresh_home()
+    pol = write_browser_policy(os.path.join(home, "policy.yaml"), ack=["x"])
+    run(home, pol, "browser", "login", "--account", "main",
+        "--platform", "x", "--simulate")
+    r = run(home, pol, "browser", "act", "--account", "main",
+            "--platform", "x", "--action", "like",
+            "--target", "https://x.com/s/58", "--simulate")
+    ex.check("X like proceeds (exit 0)", r.returncode == 0,
+             (r.stderr.strip() + r.stdout.strip())[:120])
+    ex.check("loud advisory printed",
+             "ACKNOWLEDGED-RISK ADVISORY" in r.stderr, r.stderr.strip()[:80])
+    ex.check("advisory states the plain risk",
+             "suspend or ban" in r.stderr, r.stderr.strip()[-80:])
+    log = os.path.join(home, "audit", "tos_acknowledgments.jsonl")
+    ex.check("advisory recorded to audit log",
+             os.path.exists(log) and '"platform": "x"' in open(log).read(),
+             log)
+    ex.check("action steps executed",
+             "OK (2 steps)" in r.stdout, r.stdout.strip()[:80])
+    return ex
+
+
+def exam_59_browser_profile_persists():
+    ex = Exam("exam-59", "browser login creates the persistent profile dir")
+    home = fresh_home()
+    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
+    r = run(home, pol, "browser", "login", "--account", "main",
+            "--platform", "tiktok", "--simulate")
+    ex.check("login exits 0", r.returncode == 0, r.stderr.strip()[:80])
+    pdir = os.path.join(home, "accounts", "main", "browser-profile")
+    ex.check("profile dir created", os.path.isdir(pdir), pdir)
+    sidecar = os.path.join(home, "accounts", "main", "browser.json")
+    ex.check("sidecar records the platform",
+             os.path.exists(sidecar) and
+             json.load(open(sidecar)).get("platform") == "tiktok",
+             sidecar)
+    r = run(home, pol, "browser", "status")
+    ex.check("status lists the profile", "main" in r.stdout,
+             r.stdout.strip()[:120])
+    # second login is idempotent (tops up, never wipes)
+    run(home, pol, "browser", "login", "--account", "main",
+        "--platform", "tiktok", "--simulate")
+    ex.check("re-login keeps the profile dir", os.path.isdir(pdir), pdir)
+    return ex
+
+
+def exam_60_browser_like_uses_rate_limits():
+    ex = Exam("exam-60", "Browser-backed like goes through the rate-limit controller")
+    home = fresh_home()
+    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
+    run(home, pol, "browser", "login", "--account", "main",
+        "--platform", "tiktok", "--simulate")
+    r = run(home, pol, "browser", "act", "--account", "main",
+            "--platform", "tiktok", "--action", "like",
+            "--target", "https://www.tiktok.com/v/60", "--simulate")
+    ex.check("tiktok like proceeds (no ToS block)", r.returncode == 0,
+             (r.stderr.strip() + r.stdout.strip())[:120])
+    r = run(home, pol, "ratelimit", "status")
+    ex.check("browser_goto bucket tracked",
+             "tiktok:browser_goto" in r.stdout, r.stdout.strip()[:160])
+    ex.check("browser_click bucket tracked",
+             "tiktok:browser_click" in r.stdout, r.stdout.strip()[:160])
+    return ex
+
+
+def exam_61_browser_challenge_pauses_with_notification():
+    ex = Exam("exam-61", "2FA challenge pauses the session + notifies the user")
+    home = fresh_home()
+    pol = write_browser_policy(os.path.join(home, "policy.yaml"))
+    run(home, pol, "browser", "login", "--account", "main",
+        "--platform", "instagram", "--simulate")
+    sys.path.insert(0, REPO)
+    from browser import session as _bsess
+    _bsess.mark_challenge(home, "main", kind="2fa")
+    notes = state(home, "notifications.json", [])
+    ex.check("user notified of the challenge",
+             any(n.get("kind") == "browser_challenge" for n in notes),
+             str([n.get("kind") for n in notes])[:80])
+    ex.check("notification says the agent paused",
+             any("PAUSED" in n.get("text", "") for n in notes),
+             str(notes[-1].get("text", ""))[:100])
+    r = run(home, pol, "browser", "act", "--account", "main",
+            "--platform", "instagram", "--action", "like",
+            "--target", "https://www.instagram.com/p/61", "--simulate")
+    ex.check("acting refused while challenge is open", r.returncode != 0,
+             f"exit={r.returncode}")
+    ex.check("refusal points at headed login",
+             "browser login" in (r.stderr + r.stdout),
+             (r.stderr + r.stdout).strip()[:120])
     return ex
 
 
@@ -1228,7 +1579,18 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_47_people_memory_top_fans,
          exam_48_ratelimit_exhaustion_queues_retry,
          exam_49_crisis_pauses_and_repends,
-         exam_50_listen_once_routes_events]
+         exam_50_listen_once_routes_events,
+         exam_51_memory_round_trip,
+         exam_52_memory_relations_graph,
+         exam_53_backup_on_post_create,
+         exam_54_risky_action_recovery_point,
+         exam_55_restore_dry_run_safety,
+         exam_56_crash_recovery_skip_and_resume,
+         exam_57_browser_x_refused_without_ack,
+         exam_58_browser_x_proceeds_with_ack,
+         exam_59_browser_profile_persists,
+         exam_60_browser_like_uses_rate_limits,
+         exam_61_browser_challenge_pauses_with_notification]
 
 
 def main():

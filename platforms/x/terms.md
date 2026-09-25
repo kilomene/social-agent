@@ -60,3 +60,22 @@ entry makes the CLI refuse the action (exit 2, logged to `refusals.jsonl`).
 A `restricted` entry lets the action proceed but prints the constraint as an
 advisory. The ToS layer runs **before** missions, autonomy, quiet hours, and
 rate limits — no mission or approval can override a prohibition.
+
+## Acknowledged risk (explicit user opt-in only)
+
+The user may explicitly opt X into `tos.acknowledged_risk` in
+`policy.yaml`:
+
+```yaml
+tos:
+  acknowledged_risk: [x]
+```
+
+Effect: a `prohibited` classification for X is **downgraded to
+restricted** — but ONLY with a loud, logged advisory (stderr +
+`audit/tos_acknowledgments.jsonl`) stating the plain risk: X's terms
+require API-only automation, and browser-driven engagement may get the
+account **suspended or banned**. Without this explicit acknowledgment,
+prohibitions stay fail-closed. The risk is the **user's informed
+choice**; the agent records it and never proceeds silently. Removing `x`
+from the list restores fail-closed behavior immediately.
