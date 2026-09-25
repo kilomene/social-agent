@@ -300,6 +300,7 @@
   "tests/test_tos.py::test_cli_refuses_prohibited_action",
   "tests/test_tos.py::test_cli_refuses_prohibited_watcher",
   "tests/test_tos.py::test_cli_restricted_action_proceeds_with_note",
+  "tests/test_tos.py::test_cli_watch_run_honors_acknowledged_risk_opt_in",
   "tests/test_tos.py::test_doctor_reports_tos_rules",
   "tests/test_tos.py::test_missing_platform_fails_closed",
   "tests/test_tos.py::test_prohibited_raises",

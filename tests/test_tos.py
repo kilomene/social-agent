@@ -87,12 +87,29 @@ def test_cli_acknowledged_risk_downgrades_prohibited_to_restricted(home):
     assert "DRY-RUN proposal" in r.stdout
 
 
-def test_cli_refuses_prohibited_watcher(home):
+def test_cli_refuses_prohibited_watcher(home, tmp_path):
     add_account(home, platform="x", username="xt", label="main")
     r = cli("watch", "start", "--type", "notification", "--platform", "x",
-            "--account", "main", "--id", "wx", home=home)
+            "--account", "main", "--id", "wx", home=home,
+            policy=_policy_without_ack_risk(tmp_path))
     assert r.returncode == 2
     assert "ToS" in r.stderr
+
+
+def test_cli_watch_run_honors_acknowledged_risk_opt_in(home):
+    # Regression (live 2026-09-25): `watch run` called check_tos WITHOUT
+    # the policy, so the x acknowledged-risk opt-in never applied and all
+    # 13 X watchers REFUSED despite the owner's explicit opt-in. With the
+    # policy passed, the prohibition downgrades to restricted with the
+    # loud advisory instead of refusing.
+    add_account(home, platform="x", username="xt", label="main")
+    r = cli("watch", "start", "--type", "feed", "--platform", "x",
+            "--account", "main", "--id", "wxfeed", home=home)
+    assert r.returncode == 0, r.stderr
+    r = cli("watch", "run", "wxfeed", home=home)
+    assert r.returncode == 0, r.stderr
+    assert "ACKNOWLEDGED-RISK ADVISORY" in r.stderr
+    assert "REFUSED" not in r.stderr
 
 
 def test_cli_restricted_action_proceeds_with_note(home):

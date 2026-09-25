@@ -516,7 +516,8 @@ def cmd_watch(args):
         check_platform(args.platform)
         acct = resolve_account(args.account, getattr(args, "platform", None))
         try:
-            tos_mod.check_tos(args.platform, "automated_data_collection")
+            tos_mod.check_tos(args.platform, "automated_data_collection",
+                              policy=get_policy(), home=home_dir())
         except tos_mod.ToSRefusal as e:
             log_refusal("watch", args.platform, args.type, f"ToS: {e}")
             raise
@@ -572,7 +573,8 @@ def cmd_watch(args):
 
         def _tos_check(platform):
             try:
-                tos_mod.check_tos(platform, "automated_data_collection")
+                tos_mod.check_tos(platform, "automated_data_collection",
+                        policy=get_policy(), home=home_dir())
             except tos_mod.ToSRefusal as e:
                 log_refusal("watch", platform, args.id, f"ToS: {e}")
                 raise
@@ -1250,7 +1252,8 @@ def cmd_heartbeat(args):
                 w = cls(rec["id"], rec["platform"], rec["account"], rec["config"],
                         home_dir(), rec.get("fixture"))
                 try:
-                    tos_mod.check_tos(rec["platform"], "automated_data_collection")
+                    tos_mod.check_tos(rec["platform"], "automated_data_collection",
+                              policy=get_policy(), home=home_dir())
                 except tos_mod.ToSRefusal as e:
                     log_refusal("watch", rec["platform"], rec["id"], f"ToS: {e}")
                     print(f"[tick {tick}] watcher {wid}: REFUSED (ToS): {e}")
@@ -1587,7 +1590,8 @@ def cmd_moderate(args):
     if args.op == "scan":
         check_platform(args.platform)
         resolve_account(args.account, getattr(args, "platform", None))
-        tos_mod.check_tos(args.platform, "automated_data_collection")
+        tos_mod.check_tos(args.platform, "automated_data_collection",
+                              policy=get_policy(), home=home_dir())
         if not args.fixture:
             raise UsageError("moderate scan needs --fixture (JSON list of comments)")
         with open(args.fixture, encoding="utf-8") as fh:
