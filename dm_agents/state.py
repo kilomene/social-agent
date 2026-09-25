@@ -51,13 +51,54 @@ def _ensure_canonical_row(home, platform, account, canonical):
         cx.close()
 
 
+def _sweep_display_name_aliases(home, platform, account):
+    """Delete bare display-name alias rows (e.g. "Zenas Ayansipe @dagreat00100").
+
+    Real platform thread ids never contain "@"; these rows are legacy junk
+    from before thread ids were canonicalized. When their cursors go stale
+    they cause phantom re-queues of already-handled inbound messages (seen
+    live 2026-09-25: 6 phantom reply drafts from one stale alias cursor).
+    Only sweeps when at least one canonical (no "@") thread row exists for
+    the same (platform, account), so the thread list is never wiped outright.
+    Returns True when anything was deleted.
+    """
+    cx = mem_mod.connect(home)
+    try:
+        tids = [r["thread_id"] for r in cx.execute(
+            "SELECT thread_id FROM dm_agent_state WHERE platform = ? "
+            "AND account_label = ? AND thread_id LIKE '%@%'",
+            (platform, account)).fetchall()]
+        canonical_count = cx.execute(
+            "SELECT COUNT(*) FROM dm_agent_state WHERE platform = ? "
+            "AND account_label = ? AND thread_id NOT LIKE '%@%' "
+            "AND thread_id != '__agent__'",
+            (platform, account)).fetchone()[0]
+    finally:
+        cx.close()
+    if not tids or not canonical_count:
+        return False
+    cx = mem_mod.connect(home)
+    try:
+        for t in tids:
+            cx.execute(
+                "DELETE FROM dm_agent_state WHERE platform = ? "
+                "AND account_label = ? AND thread_id = ?",
+                (platform, account, t))
+        cx.commit()
+    finally:
+        cx.close()
+    mem_mod._after_write(home)
+    return True
+
+
 def _sweep_variants(home, platform, account):
     """One-time merge of legacy suffixed thread ids into canonical rows.
 
     Finds rows whose id carries a display suffix (e.g. "123 (Name
     @handle)"), folds each into its canonical bare-id row — the freshest
     row (max last_inbound_at, ties toward canonical) wins the cursor
-    fields — then deletes the variant rows. Returns True when anything
+    fields — then deletes the variant rows. Also sweeps bare display-name
+    alias rows (see _sweep_display_name_aliases). Returns True when anything
     was merged. Cheap no-op once no variants remain.
     """
     cx = mem_mod.connect(home)
@@ -74,53 +115,56 @@ def _sweep_variants(home, platform, account):
         if c != t:
             groups.setdefault(c, []).append(t)
     if not groups:
-        return False
-    changed = False
-    for canonical in sorted(groups):
-        variants = groups[canonical]
-        _ensure_canonical_row(home, platform, account, canonical)
-        cx = mem_mod.connect(home)
-        try:
-            rows = [dict(r) for r in cx.execute(
-                "SELECT * FROM dm_agent_state WHERE platform = ? "
-                "AND account_label = ? AND thread_id IN (%s)"
-                % ",".join("?" * (len(variants) + 1)),
-                (platform, account, canonical, *variants)).fetchall()]
-            # The just-inserted canonical placeholder carries defaults
-            # (last_inbound_at 0), so any real variant beats it; ties
-            # break toward the canonical bare id.
-            freshest = max(
-                rows,
-                key=lambda r: (float(r.get("last_inbound_at") or 0.0),
-                               r["thread_id"] == canonical))
-            cx.execute(
-                "UPDATE dm_agent_state SET last_seen_id = ?, "
-                "last_inbound_id = ?, last_inbound_at = ?, active = ?, "
-                "stop_reason = ?, last_cycle = ?, last_cycle_ts = ?, "
-                "pending_check = ?, idle_parked = ?, updated_at = ? "
-                "WHERE platform = ? AND account_label = ? AND thread_id = ?",
-                (freshest.get("last_seen_id") or "",
-                 freshest.get("last_inbound_id") or "",
-                 float(freshest.get("last_inbound_at") or 0.0),
-                 freshest.get("active", 1),
-                 freshest.get("stop_reason") or "",
-                 freshest.get("last_cycle") or "",
-                 float(freshest.get("last_cycle_ts") or 0.0),
-                 freshest.get("pending_check") or "",
-                 freshest.get("idle_parked", 0),
-                 mem_mod.utcnow(),
-                 platform, account, canonical))
-            for v in variants:
+        changed = False
+    else:
+        changed = False
+        for canonical in sorted(groups):
+            variants = groups[canonical]
+            _ensure_canonical_row(home, platform, account, canonical)
+            cx = mem_mod.connect(home)
+            try:
+                rows = [dict(r) for r in cx.execute(
+                    "SELECT * FROM dm_agent_state WHERE platform = ? "
+                    "AND account_label = ? AND thread_id IN (%s)"
+                    % ",".join("?" * (len(variants) + 1)),
+                    (platform, account, canonical, *variants)).fetchall()]
+                # The just-inserted canonical placeholder carries defaults
+                # (last_inbound_at 0), so any real variant beats it; ties
+                # break toward the canonical bare id.
+                freshest = max(
+                    rows,
+                    key=lambda r: (float(r.get("last_inbound_at") or 0.0),
+                                   r["thread_id"] == canonical))
                 cx.execute(
-                    "DELETE FROM dm_agent_state WHERE platform = ? "
-                    "AND account_label = ? AND thread_id = ?",
-                    (platform, account, v))
-            cx.commit()
-            changed = True
-        finally:
-            cx.close()
+                    "UPDATE dm_agent_state SET last_seen_id = ?, "
+                    "last_inbound_id = ?, last_inbound_at = ?, active = ?, "
+                    "stop_reason = ?, last_cycle = ?, last_cycle_ts = ?, "
+                    "pending_check = ?, idle_parked = ?, updated_at = ? "
+                    "WHERE platform = ? AND account_label = ? AND thread_id = ?",
+                    (freshest.get("last_seen_id") or "",
+                     freshest.get("last_inbound_id") or "",
+                     float(freshest.get("last_inbound_at") or 0.0),
+                     freshest.get("active", 1),
+                     freshest.get("stop_reason") or "",
+                     freshest.get("last_cycle") or "",
+                     float(freshest.get("last_cycle_ts") or 0.0),
+                     freshest.get("pending_check") or "",
+                     freshest.get("idle_parked", 0),
+                     mem_mod.utcnow(),
+                     platform, account, canonical))
+                for v in variants:
+                    cx.execute(
+                        "DELETE FROM dm_agent_state WHERE platform = ? "
+                        "AND account_label = ? AND thread_id = ?",
+                        (platform, account, v))
+                cx.commit()
+                changed = True
+            finally:
+                cx.close()
     if changed:
         mem_mod._after_write(home)
+    if _sweep_display_name_aliases(home, platform, account):
+        changed = True
     return changed
 
 

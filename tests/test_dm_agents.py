@@ -385,6 +385,36 @@ def test_canonical_thread_id_strips_display_suffix():
     assert dm_state.canonical_thread_id(once) == once == bare
 
 
+def test_sweep_removes_bare_display_name_alias_rows(home):
+    """Regression: bare display-name alias rows (legacy junk with no numeric
+    id, e.g. "Zenas Ayansipe @dagreat00100") must be swept away while the
+    canonical thread row keeps its cursor. Live incident 2026-09-25: a stale
+    alias cursor caused 6 phantom reply drafts for already-handled DMs."""
+    bare = "1920160303695716352-2100845624027418624"
+    alias = "Zenas Ayansipe @dagreat00100"
+    _seed_legacy_row(home, "x", "main", bare, last_seen_id="m42",
+                     last_inbound_id="m42", last_inbound_at=100.0)
+    _seed_legacy_row(home, "x", "main", alias, last_seen_id="sep25-0702",
+                     last_inbound_id="m1", last_inbound_at=50.0)
+    assert dm_state._sweep_variants(home, "x", "main") is True
+    tids = [t["thread_id"] for t in dm_state.list_threads(home, "x", "main")]
+    assert alias not in tids
+    assert bare in tids
+    assert dm_state.get_last_seen(home, "x", "main", bare) == "m42"
+    # second sweep is a no-op
+    assert dm_state._sweep_variants(home, "x", "main") is False
+
+
+def test_sweep_keeps_alias_rows_when_no_canonical_thread(home):
+    """The alias sweep must never wipe the whole thread list: with no
+    canonical row present, alias rows are left alone."""
+    _seed_legacy_row(home, "x", "main", "Zenas Ayansipe @dagreat00100",
+                     last_seen_id="m1")
+    assert dm_state._sweep_variants(home, "x", "main") is False
+    tids = [t["thread_id"] for t in dm_state.list_threads(home, "x", "main")]
+    assert "Zenas Ayansipe @dagreat00100" in tids
+
+
 def test_bare_and_suffixed_ids_resolve_to_one_row(home):
     suffixed = ("1920160303695716352-2100845624027418624 "
                 "(Zenas Ayansipe @dagreat00100)")

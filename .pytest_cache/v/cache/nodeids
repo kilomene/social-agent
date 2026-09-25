@@ -88,6 +88,8 @@
   "tests/test_dm_agents.py::test_style_gate_long_sentence_split",
   "tests/test_dm_agents.py::test_style_gate_never_silent",
   "tests/test_dm_agents.py::test_style_gate_spaced_en_dash",
+  "tests/test_dm_agents.py::test_sweep_keeps_alias_rows_when_no_canonical_thread",
+  "tests/test_dm_agents.py::test_sweep_removes_bare_display_name_alias_rows",
   "tests/test_dm_agents.py::test_tick_issues_dm_check_ticket_with_receipts",
   "tests/test_dm_agents.py::test_tick_skips_before_interval_without_trigger",
   "tests/test_dm_agents.py::test_tiktok_adapter_refuses_with_documented_reason",
