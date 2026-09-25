@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 DB_NAME = "memory.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------- schema ---
 
@@ -74,11 +74,68 @@ CREATE TABLE IF NOT EXISTS relations (
     meta_json TEXT DEFAULT '{}', created_at TEXT NOT NULL,
     UNIQUE (subject_type, subject_id, predicate, object_type, object_id));
 """,
+    # v10: memory becomes the center of the system. New tables:
+    #   conversations   — agent<->user turns worth remembering
+    #   browser_sessions— registry of persistent browser profiles per account
+    #   missions        — pending + active + completed mission records
+    #   actions_ledger  — every completed action, keyed by idempotency key
+    #   scheduler_jobs  — scheduler state (survives restarts)
+    #   analytics       — per-platform performance rollups
+    # brand_voice gains learned examples + style rules (deepened voice).
+    2: """
+CREATE TABLE IF NOT EXISTS conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL, role TEXT NOT NULL,
+    account_label TEXT DEFAULT '', mission_id INTEGER,
+    kind TEXT DEFAULT 'chat', text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS browser_sessions (
+    account_label TEXT PRIMARY KEY, identity_id TEXT DEFAULT '',
+    profile_dir TEXT NOT NULL, platform TEXT NOT NULL,
+    status TEXT DEFAULT 'new', last_health_check TEXT,
+    challenge TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS missions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE, mission_type TEXT DEFAULT 'custom',
+    account_label TEXT DEFAULT '', status TEXT DEFAULT 'pending',
+    spec_json TEXT DEFAULT '{}', result_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS actions_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idem_key TEXT NOT NULL UNIQUE, action_type TEXT NOT NULL,
+    target TEXT DEFAULT '', payload_json TEXT DEFAULT '{}',
+    status TEXT DEFAULT 'completed', mission_id INTEGER,
+    created_at TEXT NOT NULL, completed_at TEXT,
+    result TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS scheduler_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+    spec TEXT DEFAULT '', payload_json TEXT DEFAULT '{}',
+    status TEXT DEFAULT 'enabled',
+    last_run TEXT, next_run TEXT, run_count INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS analytics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL, account_label TEXT DEFAULT '',
+    metric TEXT NOT NULL, value REAL NOT NULL,
+    period TEXT DEFAULT '', sampled_at TEXT NOT NULL);
+ALTER TABLE brand_voice ADD COLUMN examples_json TEXT DEFAULT '[]';
+ALTER TABLE brand_voice ADD COLUMN style_rules_json TEXT DEFAULT '[]';
+ALTER TABLE brand_voice ADD COLUMN last_trained TEXT;
+""",
+    3: """
+CREATE TABLE IF NOT EXISTS watcher_checkpoints (
+    watcher_id TEXT PRIMARY KEY, platform TEXT NOT NULL,
+    watcher_type TEXT DEFAULT '', account_label TEXT DEFAULT '',
+    cursor_json TEXT DEFAULT '{}', updated_at TEXT NOT NULL);
+""",
 }
 
 # Tables hashed for incremental backups (stable order).
 HASHED_TABLES = ("accounts", "brand_voice", "people", "campaigns", "schedule",
-                 "content", "performance", "decisions", "sops", "relations")
+                 "content", "performance", "decisions", "sops", "relations",
+                 "conversations", "browser_sessions", "missions",
+                 "actions_ledger", "scheduler_jobs", "analytics",
+                 "watcher_checkpoints")
 
 
 def db_path(home):
@@ -856,3 +913,767 @@ def table_hashes(home):
         return out
     finally:
         cx.close()
+
+
+# ------------------------------------------------------------ conversations ---
+
+CONVO_ROLES = ("user", "agent", "system")
+
+
+def convo_log(home, role, text, account_label="", mission_id=None,
+              kind="chat"):
+    """Log one agent<->user turn worth remembering."""
+    if role not in CONVO_ROLES:
+        raise ValueError(f"bad role {role!r}")
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("conversation text is required")
+    init_db(home)
+    cx = connect(home)
+    try:
+        cur = cx.execute(
+            "INSERT INTO conversations (ts, role, account_label, mission_id,"
+            " kind, text) VALUES (?, ?, ?, ?, ?, ?)",
+            (utcnow(), role, account_label, mission_id, kind,
+             text[:4000]))
+        cid = cur.lastrowid
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return cid
+
+
+def convo_list(home, limit=50, account_label=None, mission_id=None):
+    init_db(home)
+    cx = connect(home)
+    try:
+        q = "SELECT * FROM conversations"
+        clauses, params = [], []
+        if account_label is not None:
+            clauses.append("account_label = ?")
+            params.append(account_label)
+        if mission_id is not None:
+            clauses.append("mission_id = ?")
+            params.append(mission_id)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = cx.execute(q, params).fetchall()
+        return [_row_to_dict(r) for r in reversed(rows)]
+    finally:
+        cx.close()
+
+
+# --------------------------------------------------------- browser sessions ---
+
+SESSION_STATUSES = ("new", "login_pending", "active", "challenge",
+                    "paused", "expired")
+
+
+def session_register(home, account_label, profile_dir, platform,
+                     identity_id=""):
+    """Register (or refresh) a persistent browser profile in memory.
+
+    This is the memory-side registry; the on-disk browser.json sidecar
+    (browser/session.py) stays the live session file. Both must agree —
+    the resume engine cross-checks them."""
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute(
+            "INSERT INTO browser_sessions (account_label, identity_id,"
+            " profile_dir, platform, status, updated_at)"
+            " VALUES (?, ?, ?, ?, 'new', ?)"
+            " ON CONFLICT(account_label) DO UPDATE SET"
+            " identity_id=excluded.identity_id,"
+            " profile_dir=excluded.profile_dir,"
+            " platform=excluded.platform, updated_at=excluded.updated_at",
+            (account_label, identity_id, profile_dir, platform, utcnow()))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return session_get(home, account_label)
+
+
+def session_set_status(home, account_label, status, challenge=None):
+    if status not in SESSION_STATUSES:
+        raise ValueError(f"bad session status {status!r}")
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute(
+            "UPDATE browser_sessions SET status = ?, challenge = ?,"
+            " updated_at = ? WHERE account_label = ?",
+            (status, challenge, utcnow(), account_label))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return session_get(home, account_label)
+
+
+def session_health(home, account_label, ok=True, note=""):
+    """Record a session health check (ok=True/False)."""
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute(
+            "UPDATE browser_sessions SET last_health_check = ?,"
+            " status = CASE WHEN ? THEN status ELSE 'expired' END,"
+            " updated_at = ? WHERE account_label = ?",
+            (utcnow() + (" ok" if ok else f" FAIL: {note}"),
+             1 if ok else 0, utcnow(), account_label))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return session_get(home, account_label)
+
+
+def session_get(home, account_label):
+    init_db(home)
+    cx = connect(home)
+    try:
+        return _row_to_dict(cx.execute(
+            "SELECT * FROM browser_sessions WHERE account_label = ?",
+            (account_label,)).fetchone())
+    finally:
+        cx.close()
+
+
+def session_list(home, status=None):
+    init_db(home)
+    cx = connect(home)
+    try:
+        if status:
+            rows = cx.execute(
+                "SELECT * FROM browser_sessions WHERE status = ?"
+                " ORDER BY account_label", (status,)).fetchall()
+        else:
+            rows = cx.execute(
+                "SELECT * FROM browser_sessions ORDER BY account_label"
+            ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+    finally:
+        cx.close()
+
+
+# ----------------------------------------------------------------- missions ---
+
+MISSION_STATUSES = ("pending", "active", "paused", "held", "completed",
+                    "failed", "cancelled")
+
+
+def mission_create(home, name, mission_type="custom", account_label="",
+                   spec=None):
+    """Create a mission record. Survives restarts; the resume engine
+    picks up pending/active missions after a crash."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("mission name is required")
+    init_db(home)
+    cx = connect(home)
+    try:
+        now = utcnow()
+        cx.execute(
+            "INSERT INTO missions (name, mission_type, account_label,"
+            " status, spec_json, created_at, updated_at)"
+            " VALUES (?, ?, ?, 'pending', ?, ?, ?)"
+            " ON CONFLICT(name) DO NOTHING",
+            (name, mission_type, account_label, json.dumps(spec or {}),
+             now, now))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return mission_get(home, name)
+
+
+def mission_set_status(home, name, status, result=None):
+    if status not in MISSION_STATUSES:
+        raise ValueError(f"bad mission status {status!r}")
+    init_db(home)
+    cx = connect(home)
+    try:
+        if result is not None:
+            cx.execute(
+                "UPDATE missions SET status = ?, result_json = ?,"
+                " updated_at = ? WHERE name = ?",
+                (status, json.dumps(result), utcnow(), name))
+        else:
+            cx.execute(
+                "UPDATE missions SET status = ?, updated_at = ?"
+                " WHERE name = ?",
+                (status, utcnow(), name))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return mission_get(home, name)
+
+
+def mission_get(home, name):
+    init_db(home)
+    cx = connect(home)
+    try:
+        row = cx.execute(
+            "SELECT * FROM missions WHERE name = ?", (name,)).fetchone()
+        d = _row_to_dict(row)
+        if d is None:
+            return None
+        d["spec"] = json.loads(d.pop("spec_json") or "{}")
+        d["result"] = json.loads(d.pop("result_json") or "{}")
+        return d
+    finally:
+        cx.close()
+
+
+def mission_list(home, status=None):
+    init_db(home)
+    cx = connect(home)
+    try:
+        if status:
+            rows = cx.execute(
+                "SELECT * FROM missions WHERE status = ? ORDER BY id",
+                (status,)).fetchall()
+        else:
+            rows = cx.execute(
+                "SELECT * FROM missions ORDER BY id").fetchall()
+        out = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d["spec"] = json.loads(d.pop("spec_json") or "{}")
+            d["result"] = json.loads(d.pop("result_json") or "{}")
+            out.append(d)
+        return out
+    finally:
+        cx.close()
+
+
+def mission_pending(home):
+    """Missions the resume engine must pick back up."""
+    out = []
+    for status in ("pending", "active", "paused", "held"):
+        out.extend(mission_list(home, status=status))
+    return out
+
+
+# ------------------------------------------------------------ actions ledger ---
+
+def ledger_record(home, idem_key, action_type, target="", payload=None,
+                  status="completed", mission_id=None, result=""):
+    """Record a completed (or failed) action in the permanent ledger.
+
+    idem_key is UNIQUE: the ledger is the second line of defense (after
+    the journal) against duplicating platform actions after a crash."""
+    if not idem_key:
+        raise ValueError("idem_key is required")
+    if status not in ("completed", "failed"):
+        raise ValueError(f"bad ledger status {status!r}")
+    init_db(home)
+    cx = connect(home)
+    try:
+        now = utcnow()
+        cx.execute(
+            "INSERT INTO actions_ledger (idem_key, action_type, target,"
+            " payload_json, status, mission_id, created_at, completed_at,"
+            " result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(idem_key) DO UPDATE SET"
+            " status=excluded.status, completed_at=excluded.completed_at,"
+            " result=excluded.result",
+            (idem_key, action_type, target, json.dumps(payload or {}),
+             status, mission_id, now, now, str(result)[:2000]))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return ledger_get(home, idem_key)
+
+
+def ledger_get(home, idem_key):
+    init_db(home)
+    cx = connect(home)
+    try:
+        row = cx.execute(
+            "SELECT * FROM actions_ledger WHERE idem_key = ?",
+            (idem_key,)).fetchone()
+        d = _row_to_dict(row)
+        if d is None:
+            return None
+        d["payload"] = json.loads(d.pop("payload_json") or "{}")
+        return d
+    finally:
+        cx.close()
+
+
+def ledger_completed_keys(home):
+    """All idempotency keys already completed — for duplicate checks."""
+    init_db(home)
+    cx = connect(home)
+    try:
+        return {r["idem_key"] for r in cx.execute(
+            "SELECT idem_key FROM actions_ledger"
+            " WHERE status = 'completed'").fetchall()}
+    finally:
+        cx.close()
+
+
+def ledger_list(home, limit=100, status=None):
+    init_db(home)
+    cx = connect(home)
+    try:
+        if status:
+            rows = cx.execute(
+                "SELECT * FROM actions_ledger WHERE status = ?"
+                " ORDER BY id DESC LIMIT ?", (status, limit)).fetchall()
+        else:
+            rows = cx.execute(
+                "SELECT * FROM actions_ledger ORDER BY id DESC LIMIT ?",
+                (limit,)).fetchall()
+        out = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            out.append(d)
+        return out
+    finally:
+        cx.close()
+
+
+# ------------------------------------------------------------- scheduler ---
+
+SCHED_KINDS = ("once", "interval", "daily")
+SCHED_STATUSES = ("enabled", "disabled", "paused")
+
+
+def sched_add(home, name, kind, spec="", payload=None):
+    """Register a scheduler job. ``kind``: once (spec=ISO run_at),
+    interval (spec=seconds), daily (spec=HH:MM)."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("job name is required")
+    if kind not in SCHED_KINDS:
+        raise ValueError(f"bad scheduler kind {kind!r}")
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute(
+            "INSERT INTO scheduler_jobs (name, kind, spec, payload_json,"
+            " status, next_run, created_at)"
+            " VALUES (?, ?, ?, ?, 'enabled', ?, ?)"
+            " ON CONFLICT(name) DO NOTHING",
+            (name, kind, spec, json.dumps(payload or {}),
+             _initial_next_run(kind, spec), utcnow()))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return sched_get(home, name)
+
+
+def _initial_next_run(kind, spec):
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    try:
+        if kind == "once":
+            return spec  # ISO timestamp supplied by caller
+        if kind == "interval":
+            secs = int(spec)
+            return (now + timedelta(seconds=secs)).isoformat(
+                timespec="seconds")
+        if kind == "daily":
+            hh, mm = spec.split(":")[:2]
+            nxt = now.replace(hour=int(hh), minute=int(mm), second=0,
+                              microsecond=0)
+            if nxt <= now:
+                nxt = nxt + timedelta(days=1)
+            return nxt.isoformat(timespec="seconds")
+    except (ValueError, IndexError):
+        pass
+    return now.isoformat(timespec="seconds")
+
+
+def sched_get(home, name):
+    init_db(home)
+    cx = connect(home)
+    try:
+        row = cx.execute(
+            "SELECT * FROM scheduler_jobs WHERE name = ?", (name,)
+        ).fetchone()
+        d = _row_to_dict(row)
+        if d is None:
+            return None
+        d["payload"] = json.loads(d.pop("payload_json") or "{}")
+        return d
+    finally:
+        cx.close()
+
+
+def sched_list(home, status=None):
+    init_db(home)
+    cx = connect(home)
+    try:
+        if status:
+            rows = cx.execute(
+                "SELECT * FROM scheduler_jobs WHERE status = ?"
+                " ORDER BY next_run", (status,)).fetchall()
+        else:
+            rows = cx.execute(
+                "SELECT * FROM scheduler_jobs ORDER BY next_run"
+            ).fetchall()
+        out = []
+        for r in rows:
+            d = _row_to_dict(r)
+            d["payload"] = json.loads(d.pop("payload_json") or "{}")
+            out.append(d)
+        return out
+    finally:
+        cx.close()
+
+
+def sched_set(home, name, status=None, next_run=None):
+    """Enable/disable/pause a job or override its next run."""
+    if status is not None and status not in SCHED_STATUSES:
+        raise ValueError(f"bad scheduler status {status!r}")
+    init_db(home)
+    cx = connect(home)
+    try:
+        if status is not None:
+            cx.execute("UPDATE scheduler_jobs SET status = ? WHERE name = ?",
+                       (status, name))
+        if next_run is not None:
+            cx.execute(
+                "UPDATE scheduler_jobs SET next_run = ? WHERE name = ?",
+                (next_run, name))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return sched_get(home, name)
+
+
+def sched_mark_ran(home, name, ok=True):
+    """Record a run; advance next_run for interval/daily jobs."""
+    job = sched_get(home, name)
+    if job is None:
+        raise KeyError(f"unknown scheduler job {name!r}")
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    nxt = None
+    if ok and job["kind"] == "interval":
+        try:
+            nxt = (now + timedelta(seconds=int(job["spec"]))).isoformat(
+                timespec="seconds")
+        except ValueError:
+            nxt = None
+    elif ok and job["kind"] == "daily":
+        nxt = _initial_next_run("daily", job["spec"])
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute(
+            "UPDATE scheduler_jobs SET last_run = ?, next_run = ?,"
+            " run_count = run_count + 1 WHERE name = ?",
+            (now.isoformat(timespec="seconds"), nxt, name))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return sched_get(home, name)
+
+
+def sched_due(home, now_iso=None):
+    """Jobs that are enabled and due at ``now_iso`` (default: now)."""
+    now_iso = now_iso or utcnow()
+    return [j for j in sched_list(home, status="enabled")
+            if j.get("next_run") and j["next_run"] <= now_iso]
+
+
+# --------------------------------------------------------------- analytics ---
+
+def analytics_log(home, platform, metric, value, account_label="",
+                  period=""):
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute(
+            "INSERT INTO analytics (platform, account_label, metric, value,"
+            " period, sampled_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (platform, account_label, metric, float(value), period,
+             utcnow()))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+
+
+def analytics_summary(home, platform=None, account_label=None):
+    """Latest value per (platform, account, metric, period)."""
+    init_db(home)
+    cx = connect(home)
+    try:
+        q = ("SELECT platform, account_label, metric, period,"
+             " MAX(sampled_at) AS sampled_at FROM analytics")
+        clauses, params = [], []
+        if platform is not None:
+            clauses.append("platform = ?")
+            params.append(platform)
+        if account_label is not None:
+            clauses.append("account_label = ?")
+            params.append(account_label)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " GROUP BY platform, account_label, metric, period"
+        latest = cx.execute(q, params).fetchall()
+        out = []
+        for r in latest:
+            row = cx.execute(
+                "SELECT value, sampled_at FROM analytics"
+                " WHERE platform = ? AND account_label = ? AND metric = ?"
+                " AND period = ? ORDER BY sampled_at DESC, id DESC LIMIT 1",
+                (r["platform"], r["account_label"], r["metric"],
+                 r["period"])).fetchone()
+            out.append({"platform": r["platform"],
+                        "account_label": r["account_label"],
+                        "metric": r["metric"], "period": r["period"],
+                        "value": row["value"],
+                        "sampled_at": row["sampled_at"]})
+        return sorted(out, key=lambda d: (d["platform"], d["metric"]))
+    finally:
+        cx.close()
+
+
+# ---------------------------------------------------- brand voice (deepened) ---
+
+def _voice_json_columns(home, account_label):
+    cx = connect(home)
+    try:
+        row = cx.execute(
+            "SELECT examples_json, style_rules_json, last_trained"
+            " FROM brand_voice WHERE account_label = ?",
+            (account_label,)).fetchone()
+        if row is None:
+            return {"examples": [], "style_rules": [], "last_trained": None}
+        return {
+            "examples": json.loads(row["examples_json"] or "[]"),
+            "style_rules": json.loads(row["style_rules_json"] or "[]"),
+            "last_trained": row["last_trained"],
+        }
+    finally:
+        cx.close()
+
+
+def voice_learn_example(home, account_label, example_text, kind="post"):
+    """Teach the voice with a real example of the owner's writing."""
+    example_text = (example_text or "").strip()
+    if not example_text:
+        raise ValueError("example text is required")
+    init_db(home)
+    cols = _voice_json_columns(home, account_label)
+    examples = cols["examples"]
+    entry = {"ts": utcnow(), "kind": kind, "text": example_text[:2000]}
+    if entry["text"] not in [e.get("text") for e in examples]:
+        examples.append(entry)
+    examples = examples[-100:]  # keep the freshest 100
+    cx = connect(home)
+    try:
+        cx.execute(
+            "INSERT INTO brand_voice (account_label, updated_at,"
+            " examples_json, last_trained)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(account_label) DO UPDATE SET"
+            " examples_json=excluded.examples_json,"
+            " last_trained=excluded.last_trained,"
+            " updated_at=excluded.updated_at",
+            (account_label, utcnow(), json.dumps(examples), utcnow()))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return voice_profile(home, account_label)
+
+
+def voice_learn_rule(home, account_label, rule):
+    """Teach the voice one explicit style rule ("never start with 'hey guys'")."""
+    rule = (rule or "").strip()
+    if not rule:
+        raise ValueError("rule is required")
+    init_db(home)
+    cols = _voice_json_columns(home, account_label)
+    rules = cols["style_rules"]
+    entry = {"ts": utcnow(), "rule": rule}
+    if rule not in [e.get("rule") for e in rules]:
+        rules.append(entry)
+    rules = rules[-200:]
+    cx = connect(home)
+    try:
+        cx.execute(
+            "INSERT INTO brand_voice (account_label, updated_at,"
+            " style_rules_json, last_trained)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(account_label) DO UPDATE SET"
+            " style_rules_json=excluded.style_rules_json,"
+            " last_trained=excluded.last_trained,"
+            " updated_at=excluded.updated_at",
+            (account_label, utcnow(), json.dumps(rules), utcnow()))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return voice_profile(home, account_label)
+
+
+def voice_profile(home, account_label):
+    """Full decoded brand voice: tone, bans, dos/donts, examples, rules."""
+    base = get_brand_voice(home, account_label) or {}
+    cols = _voice_json_columns(home, account_label)
+    return {
+        "account_label": account_label,
+        "tone_profile": base.get("tone_profile", ""),
+        "banned_terms": json.loads(base.get("banned_terms_json") or "[]"),
+        "dos": json.loads(base.get("dos_json") or "[]"),
+        "donts": json.loads(base.get("donts_json") or "[]"),
+        "examples": cols["examples"],
+        "style_rules": cols["style_rules"],
+        "last_trained": cols["last_trained"],
+        "updated_at": base.get("updated_at"),
+    }
+
+
+# ------------------------------------------------------- watcher checkpoints ---
+
+def checkpoint_save(home, watcher_id, platform, cursor, watcher_type="",
+                    account_label=""):
+    """Save a watcher checkpoint (last poll cursor) into the shared DB.
+
+    The cursor is a dict like {"seen_ids": [...], "last_poll": iso,
+    "polls": n, "events_found": n}. This is the authoritative resume
+    state: the Watcher Engine replays these after a restart so every
+    platform's watchers continue exactly where they stopped.
+    """
+    if not watcher_id:
+        raise ValueError("watcher_id is required")
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute(
+            "INSERT INTO watcher_checkpoints (watcher_id, platform,"
+            " watcher_type, account_label, cursor_json, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(watcher_id) DO UPDATE SET platform=excluded.platform,"
+            " watcher_type=excluded.watcher_type,"
+            " account_label=excluded.account_label,"
+            " cursor_json=excluded.cursor_json,"
+            " updated_at=excluded.updated_at",
+            (watcher_id, platform, watcher_type, account_label,
+             json.dumps(dict(cursor or {})), utcnow()))
+        cx.commit()
+    finally:
+        cx.close()
+    _after_write(home)
+    return checkpoint_get(home, watcher_id)
+
+
+def checkpoint_get(home, watcher_id):
+    """Return a decoded checkpoint dict, or None if the watcher never ran."""
+    init_db(home)
+    cx = connect(home)
+    try:
+        row = _row_to_dict(cx.execute(
+            "SELECT * FROM watcher_checkpoints WHERE watcher_id = ?",
+            (watcher_id,)).fetchone())
+    finally:
+        cx.close()
+    if not row:
+        return None
+    try:
+        cursor = json.loads(row.get("cursor_json") or "{}")
+    except ValueError:
+        cursor = {}
+    row["cursor"] = cursor
+    return row
+
+
+def checkpoint_list(home, platform=None):
+    """All checkpoints, optionally filtered to one platform."""
+    init_db(home)
+    cx = connect(home)
+    try:
+        if platform:
+            rows = cx.execute(
+                "SELECT * FROM watcher_checkpoints WHERE platform = ?"
+                " ORDER BY watcher_id", (platform,)).fetchall()
+        else:
+            rows = cx.execute(
+                "SELECT * FROM watcher_checkpoints ORDER BY platform,"
+                " watcher_id").fetchall()
+    finally:
+        cx.close()
+    out = []
+    for r in rows:
+        d = _row_to_dict(r)
+        try:
+            d["cursor"] = json.loads(d.get("cursor_json") or "{}")
+        except ValueError:
+            d["cursor"] = {}
+        out.append(d)
+    return out
+
+
+def checkpoint_clear(home, watcher_id):
+    """Remove a checkpoint (watcher deleted/reset)."""
+    init_db(home)
+    cx = connect(home)
+    try:
+        cx.execute("DELETE FROM watcher_checkpoints WHERE watcher_id = ?",
+                   (watcher_id,))
+        cx.commit()
+    finally:
+        cx.close()
+
+
+# ------------------------------------------------------- platform memory view ---
+
+class PlatformMemoryView:
+    """Namespaced view into the SHARED memory DB for one platform.
+
+    This is a VIEW, not a copy: there is exactly one memory.db per
+    install, and every method below delegates to ``core.memory`` with
+    the platform preset. ``platforms/<name>/memory/`` binds this to its
+    platform — it must never contain its own database file.
+    """
+
+    def __init__(self, home, platform):
+        self.home = home
+        self.platform = platform
+
+    # -- analytics scoped to this platform --
+    def log_metric(self, metric, value, account_label="", period=""):
+        return analytics_log(self.home, self.platform, metric, value,
+                             account_label=account_label, period=period)
+
+    def metrics(self, account_label=None):
+        return analytics_summary(self.home, platform=self.platform,
+                                 account_label=account_label)
+
+    # -- conversations / missions scoped to this platform's accounts --
+    def conversations(self, account_label=None, limit=50):
+        return convo_list(self.home, limit=limit, account_label=account_label)
+
+    def missions(self, status=None):
+        ms = mission_list(self.home, status=status)
+        return ms
+
+    # -- watcher checkpoints for this platform (resume state) --
+    def watcher_checkpoints(self):
+        return checkpoint_list(self.home, platform=self.platform)
+
+    # -- browser sessions for this platform's accounts --
+    def sessions(self, account_label=None):
+        ss = session_list(self.home)
+        if account_label:
+            ss = [s for s in ss if s["account_label"] == account_label]
+        return ss

@@ -14,7 +14,7 @@ assuming anything else is broken. Prefer role/text-based selectors over
 deep class chains — they rot slower.
 """
 
-from platforms.browser import facebook, instagram, reddit, tiktok, x, youtube
+from platforms.browser import facebook, instagram, linkedin, reddit, tiktok, x, youtube
 
 RECIPES = {
     "facebook": facebook,
@@ -23,6 +23,7 @@ RECIPES = {
     "youtube": youtube,
     "reddit": reddit,
     "tiktok": tiktok,
+    "linkedin": linkedin,
 }
 
 

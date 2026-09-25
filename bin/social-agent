@@ -29,7 +29,7 @@ if REPO_ROOT not in sys.path:
 from policy import yaml_lite
 from platforms.base import get_adapter, SUPPORTED_PLATFORMS
 from platforms import tos as tos_mod
-from watchers import REGISTRY, WatcherError
+from core.watcher_engine import REGISTRY, WatcherError, FIXTURES_DIR
 from engagement import interest as interest_mod
 from heartbeat import pinger as hb
 import missions as missions_mod
@@ -43,6 +43,9 @@ from security import secrets as secrets_mod
 from security import audit as security_audit_mod
 from learning import study as study_mod
 from identity import check as identity_mod
+from identity import store as identity_store
+from core import scheduler as sched_mod
+from core import remote as remote_mod
 from moderation import classify as mod_classify
 from moderation import propose as mod_propose
 from captions import generate as captions_mod
@@ -556,19 +559,23 @@ def cmd_watch(args):
         rec = registry.get(args.id)
         if not rec:
             raise UsageError(f"unknown watcher {args.id!r}")
-        try:
-            tos_mod.check_tos(rec["platform"], "automated_data_collection")
-        except tos_mod.ToSRefusal as e:
-            log_refusal("watch", rec["platform"], rec["id"], f"ToS: {e}")
-            raise
         if not rec.get("enabled"):
             raise UsageError(f"watcher {args.id} is stopped")
-        cls = REGISTRY[rec["type"]]
-        w = cls(rec["id"], rec["platform"], rec["account"], rec["config"],
-                home_dir(), rec.get("fixture"))
+        from core.watcher_engine import WatcherEngine
+        home = home_dir()
+
+        def _tos_check(platform):
+            try:
+                tos_mod.check_tos(platform, "automated_data_collection")
+            except tos_mod.ToSRefusal as e:
+                log_refusal("watch", platform, args.id, f"ToS: {e}")
+                raise
+
+        engine = WatcherEngine(home, tos_check=_tos_check)
         hb_cfg = hb.load_config()
         try:
-            events = hb.watch_run(hb_cfg, rec["id"], w.check)
+            events = hb.watch_run(hb_cfg, rec["id"],
+                                  lambda: engine.poll(args.id))
         except (WatcherError, OSError) as e:
             raise UsageError(str(e))
         print(f"poll ok: {len(events)} new event(s)")
@@ -579,7 +586,7 @@ def cmd_watch(args):
         # Crisis watcher auto-pause: opt-in ONLY (auto_pause defaults off).
         # A false positive must never silence the account on its own.
         if rec["type"] == "crisis":
-            cfg = w.effective_config()
+            cfg = engine._instantiate(rec).effective_config()
             spikes = [e for e in events if e.get("kind") == "crisis:spike"]
             if spikes and cfg.get("auto_pause") and not crisis_mod.is_active(home_dir()):
                 st = crisis_mod.activate(
@@ -592,6 +599,25 @@ def cmd_watch(args):
                                 f"{len(spikes)} spike event(s)")
                 print(f"AUTO-PAUSE: crisis mode ON ({len(st['held'])} item(s) held). "
                       f"Run `crisis off` explicitly to resume.")
+    elif args.op == "register-platform":
+        check_platform(args.platform)
+        from core.watcher_engine import WatcherEngine, DuplicateWatcherError
+        import importlib
+        try:
+            pkg = importlib.import_module(
+                f"platforms.{args.platform}.watchers")
+        except ModuleNotFoundError:
+            raise UsageError(
+                f"platform {args.platform!r} has no watchers package")
+        engine = WatcherEngine(home_dir())
+        try:
+            recs = pkg.register(engine, account=args.account,
+                                fixtures_dir=args.fixtures_dir)
+        except DuplicateWatcherError as e:
+            raise UsageError(str(e))
+        print(f"registered {len(recs)} watcher(s) for {args.platform}:")
+        for r in recs:
+            print(f"  {r['id']} [{r['type']}]")
     elif args.op == "events":
         events = read_events()
         if args.watcher:
@@ -1431,6 +1457,73 @@ def cmd_identity(args):
             sys.exit(2)
         for a in res["advisories"]:
             print(f"note: {a}")
+    elif args.op == "add":
+        ident = identity_store.create_identity(home_dir(), args.name,
+                                               owner_name=args.owner or "")
+        print(f"identity '{ident['id']}' created (owner: {args.owner or '-'})")
+        print("One shared browser profile for all its platforms is ready.")
+    elif args.op == "list":
+        idents = identity_store.list_identities(home_dir())
+        if not idents:
+            print("no identities yet — `identity add --name <name>`")
+            return
+        for i in idents:
+            full = identity_store.get_identity(home_dir(), i["id"])
+            accts = ", ".join(
+                f"{a['platform']}:{a['account_label']}"
+                for a in full["accounts"]) or "-"
+            print(f"{i['id']} (owner: {i['owner_name'] or '-'})"
+                  f" accounts=[{accts}]")
+    elif args.op == "link":
+        ident = identity_store.link_account(home_dir(), args.identity,
+                                            args.account, args.platform,
+                                            handle=args.handle or "")
+        pdir = identity_store.shared_profile_dir(home_dir(), args.identity)
+        print(f"linked {args.platform}:{args.account}"
+              f" -> identity '{args.identity}'")
+        print(f"shared browser profile: {pdir}")
+    elif args.op == "unlink":
+        identity_store.unlink_account(home_dir(), args.identity,
+                                      args.account)
+        print(f"unlinked {args.account} from '{args.identity}'")
+    elif args.op == "grant":
+        identity_store.grant(home_dir(), args.identity, args.action)
+        print(f"granted '{args.action}' to '{args.identity}'")
+    elif args.op == "revoke":
+        identity_store.revoke(home_dir(), args.identity, args.action)
+        print(f"revoked '{args.action}' from '{args.identity}'")
+    elif args.op == "check-perm":
+        ok = identity_store.may(home_dir(), args.identity, args.action)
+        appr = identity_store.approval_required(home_dir(), args.identity,
+                                                args.action)
+        print(f"identity '{args.identity}' may '{args.action}':"
+              f" {'YES' if ok else 'NO (fail-closed)'}")
+        print(f"human approval required: {'yes' if appr else 'no'}")
+        if not ok:
+            sys.exit(2)
+    elif args.op == "fingerprint":
+        kv = dict(p.split("=", 1) for p in (args.set or [])
+                  if "=" in p)
+        fp = identity_store.set_fingerprint(
+            home_dir(), args.identity,
+            user_agent=kv.get("user_agent", ""),
+            viewport=kv.get("viewport", ""),
+            locale=kv.get("locale", ""),
+            timezone_name=kv.get("timezone", ""),
+            notes=kv.get("notes", ""))
+        print(f"fingerprint notes saved for '{args.identity}'")
+        for k in ("user_agent", "viewport", "locale", "timezone"):
+            if fp.get(k):
+                print(f"  {k}: {fp[k]}")
+        print("  (human-consistency notes only — no spoofing/rotation)")
+    elif args.op == "profile":
+        pdir = identity_store.shared_profile_dir(home_dir(), args.identity)
+        data_file = os.path.join(home_dir(), "identity", "browser_profiles",
+                                 args.identity + ".json")
+        print(f"identity '{args.identity}' shared browser profile:")
+        print(f"  dir: {pdir}")
+        print(f"  registry: {data_file}")
+        print("  All platforms for this identity use this ONE profile.")
 
 
 # -------------------------------------------------------------- moderate ---
@@ -1787,14 +1880,119 @@ def cmd_memory(args):
             print(f"brand voice saved for {args.account}")
             print(f"  tone: {v['tone_profile']}")
         elif args.vop == "show":
-            v = mem_mod.get_brand_voice(home, args.account)
-            if not v:
-                print(f"no brand voice recorded for {args.account}")
-                return
+            v = mem_mod.voice_profile(home, args.account)
             print(f"tone: {v['tone_profile']}")
-            print(f"banned: {v['banned_terms_json']}")
-            print(f"dos: {v['dos_json']}")
-            print(f"donts: {v['donts_json']}")
+            print(f"banned: {v['banned_terms']}")
+            print(f"dos: {v['dos']}")
+            print(f"donts: {v['donts']}")
+            if v["style_rules"]:
+                print("learned rules:")
+                for r in v["style_rules"]:
+                    print(f"  - {r['rule']}")
+            print(f"examples: {len(v['examples'])}"
+                  + (f" (last trained {v['last_trained']})"
+                     if v["last_trained"] else ""))
+        elif args.vop == "learn-example":
+            v = mem_mod.voice_learn_example(home, args.account, args.text,
+                                            kind=args.kind or "post")
+            print(f"learned example for {args.account}"
+                  f" ({len(v['examples'])} total)")
+        elif args.vop == "learn-rule":
+            v = mem_mod.voice_learn_rule(home, args.account, args.text)
+            print(f"learned rule for {args.account}"
+                  f" ({len(v['style_rules'])} total)")
+    elif op == "convo":
+        if args.cop == "log":
+            cid = mem_mod.convo_log(home, args.role, args.text,
+                                    account_label=args.account or "",
+                                    mission_id=args.mission,
+                                    kind=args.kind or "chat")
+            print(f"conversation {cid} logged [{args.role}]")
+        elif args.cop == "list":
+            items = mem_mod.convo_list(home, limit=args.limit or 50,
+                                       account_label=args.account or None,
+                                       mission_id=args.mission)
+            if not items:
+                print("no conversations recorded")
+                return
+            for c in items:
+                print(f"{c['id']} [{c['ts']}] {c['role']}:"
+                      f" {c['text'][:120]}")
+    elif op == "missions":
+        if args.mop == "create":
+            m = mem_mod.mission_create(home, args.name,
+                                       mission_type=args.type or "custom",
+                                       account_label=args.account or "",
+                                       spec=json.loads(args.spec)
+                                       if args.spec else None)
+            print(f"mission '{m['name']}' created [{m['status']}]")
+        elif args.mop == "list":
+            items = mem_mod.mission_list(home, status=args.status)
+            if not items:
+                print("no missions recorded")
+                return
+            for m in items:
+                print(f"{m['id']} [{m['status']}] {m['name']}"
+                      f" ({m['mission_type']})")
+        elif args.mop == "set-status":
+            m = mem_mod.mission_set_status(home, args.name, args.status)
+            if not m:
+                raise UsageError(f"unknown mission {args.name!r}")
+            print(f"mission '{args.name}' -> {args.status}")
+        elif args.mop == "pending":
+            items = mem_mod.mission_pending(home)
+            if not items:
+                print("no pending missions")
+                return
+            for m in items:
+                print(f"[{m['status']}] {m['name']} ({m['mission_type']})")
+        elif args.mop == "ledger":
+            items = mem_mod.ledger_list(home, limit=args.limit or 100,
+                                        status=args.status)
+            if not items:
+                print("no completed actions recorded")
+                return
+            for a in items:
+                print(f"{a['id']} [{a['status']}] {a['action_type']}"
+                      f" {a['target']} key={a['idem_key'][:12]}")
+    elif op == "analytics":
+        if args.aop == "log":
+            mem_mod.analytics_log(home, args.platform, args.metric,
+                                  args.value,
+                                  account_label=args.account or "",
+                                  period=args.period or "")
+            print(f"analytics: {args.platform}/{args.metric}={args.value}")
+        elif args.aop == "summary":
+            rows = mem_mod.analytics_summary(
+                home, platform=args.platform or None,
+                account_label=args.account or None)
+            if not rows:
+                print("no analytics recorded")
+                return
+            for r in rows:
+                print(f"{r['platform']}/{r['account_label'] or '-'}"
+                      f" {r['metric']}[{r['period'] or 'all'}]={r['value']}")
+    elif op == "sessions":
+        if args.sop == "list":
+            items = mem_mod.session_list(home, status=args.status)
+            if not items:
+                print("no browser sessions registered")
+                return
+            for s in items:
+                print(f"{s['account_label']} [{s['platform']}]"
+                      f" status={s['status']}"
+                      + (f" identity={s['identity_id']}"
+                         if s.get("identity_id") else "")
+                      + (f" last_check={s['last_health_check']}"
+                         if s.get("last_health_check") else ""))
+        elif args.sop == "health":
+            s = mem_mod.session_health(home, args.account,
+                                       ok=not args.failed,
+                                       note=args.note or "")
+            if not s:
+                raise UsageError(f"unknown session {args.account!r}")
+            print(f"session {args.account}: health recorded"
+                  f" (status={s['status']})")
     elif op == "account":
         if args.aop == "add":
             a = mem_mod.upsert_account(home, args.label, args.platform,
@@ -1827,6 +2025,18 @@ def cmd_memory(args):
 def cmd_backup(args):
     home = home_dir()
     if args.op == "list":
+        if args.versioned:
+            snaps = backup_mod.list_versioned(home)
+            if not snaps:
+                print("no versioned snapshots yet")
+                return
+            latest = backup_mod.resolve_latest(home)
+            for m in snaps:
+                mark = "  <-- latest" if m["id"] == latest else ""
+                print(f"{m['id']} [{m['trigger']}] {m['timestamp']}"
+                      f" files={len(m.get('files', []))}{mark}"
+                      + (f" — {m['note']}" if m.get("note") else ""))
+            return
         snaps = backup_mod.list_snapshots(home)
         if not snaps:
             print("no snapshots yet")
@@ -1837,6 +2047,14 @@ def cmd_backup(args):
                   f" files={nfiles}"
                   + (f" — {m['note']}" if m.get("note") else ""))
     elif args.op == "snapshot":
+        if args.versioned:
+            m = backup_mod.versioned_snapshot(
+                home, trigger=args.trigger, note=args.note or "",
+                policy=get_policy())
+            print(f"versioned snapshot {m['id']} [{args.trigger}]"
+                  f" ({len(m['files'])} files, cache excluded)")
+            print("backups/latest now points at it")
+            return
         files = [f.strip() for f in (args.files or "").split(",") if f.strip()]
         m = backup_mod.snapshot(home, args.trigger, files=files,
                                 note=args.note or "")
@@ -1856,6 +2074,18 @@ def cmd_backup(args):
                 d["memory_tables_changed"]):
             print("  (no differences)")
     elif args.op == "restore":
+        if args.versioned:
+            plan = backup_mod.versioned_restore(home, args.id,
+                                                dry_run=not args.apply)
+            for c in plan["changes"]:
+                print(f"  {c['action']}: {c['path']}")
+            if args.apply:
+                print(f"staged to {plan['staged_to']}")
+                print("Review the staging dir, then copy files into place"
+                      " yourself. Live files were NOT touched.")
+            else:
+                print("dry-run only. Re-run with --apply to stage.")
+            return
         if args.apply:
             plan = backup_mod.restore(home, args.id, dry_run=False)
             print(f"staged to {plan['staged_to']}")
@@ -1867,13 +2097,142 @@ def cmd_backup(args):
             print(f"  {c['action']}: {c['path']}")
         if not args.apply:
             print("dry-run only. Re-run with --apply to stage the restore.")
+    elif args.op == "export":
+        r = backup_mod.export_backup(home, args.id, args.dest)
+        print(f"exported {r['snapshot']} -> {r['bundle']} ({r['size']} bytes)")
+        print("Import on another machine with: backup import --bundle <file>")
+    elif args.op == "import":
+        r = backup_mod.import_backup(home, args.bundle, force=args.force)
+        print(f"imported snapshot {r['snapshot']}:"
+              f" {len(r['installed'])} files installed,"
+              f" {len(r['skipped'])} skipped")
+        for s in r["skipped"][:10]:
+            print(f"  skipped: {s}")
+    elif args.op == "remote-setup":
+        from core import install as _install
+        if args.provider not in _install.REMOTE_PROVIDERS:
+            raise UsageError(
+                f"unknown provider {args.provider!r} — choose from:"
+                f" {', '.join(_install.REMOTE_PROVIDERS)}")
+        info = _install.setup_remote_backup(home, args.provider,
+                                            args.target or "")
+        print(f"remote provider: {info.get('provider') or 'none (offline-only)'}")
+        if info.get("target"):
+            print(f"  target: {info['target']}")
+        print(f"  consent: {info.get('consent') or 'n/a'}")
+        print(f"  {info.get('encryption') or info.get('note', '')}")
+    elif args.op == "remote-status":
+        cfg = remote_mod.get_config(home)
+        if not cfg or not cfg.get("provider"):
+            print("remote backup: not configured (offline-only)."
+                  " `backup remote-setup --provider <name>` to enable.")
+            return
+        print(f"provider: {cfg['provider']}")
+        print(f"target: {cfg.get('target') or '-'}")
+        c = cfg.get("consent") or {}
+        print(f"consent: {'granted ' + c.get('granted_at', '') if c.get('granted_at') else 'MISSING'}")
+        e = cfg.get("encryption") or {}
+        print(f"encryption: {e.get('method') or 'NOT CONFIGURED'}")
+        ok, reasons = remote_mod.check_ready(home)
+        print(f"sync ready: {'yes' if ok else 'NO — ' + '; '.join(reasons)}")
+    elif args.op == "sync":
+        try:
+            r = remote_mod.sync(home,
+                                snapshot_name=args.snapshot or "latest")
+        except PermissionError as e:
+            print(f"REFUSED: {e}", file=sys.stderr)
+            sys.exit(2)
+        print(f"synced {r['snapshot']} -> {r['provider']}"
+              f" ({r['size']} bytes, {r['method']})")
+        print(f"  {r.get('detail', '')}")
 
 
 # ----------------------------------------------------------------- recover ---
 
 def cmd_recover(args):
+    if args.full:
+        report = rec_mod.full_resume(home_dir(), execute=args.execute)
+        print(rec_mod.format_full_resume(report))
+        return
     report = rec_mod.recover(home_dir(), execute=args.execute)
     print(rec_mod.format_report(report))
+
+
+# --------------------------------------------------------------- scheduler ---
+
+def cmd_scheduler(args):
+    home = home_dir()
+    if args.op == "add":
+        job = sched_mod.add(home, args.name, args.kind, args.spec or "",
+                            json.loads(args.payload) if args.payload else None)
+        if not job:
+            raise UsageError(f"job {args.name!r} already exists")
+        print(f"scheduler job '{args.name}' [{args.kind}]"
+              f" next_run={job['next_run']}")
+    elif args.op == "list":
+        jobs = sched_mod.list_jobs(home, status=args.status)
+        if not jobs:
+            print("no scheduler jobs")
+            return
+        for j in jobs:
+            print(f"{j['name']} [{j['kind']}] status={j['status']}"
+                  f" next={j['next_run'] or '-'} runs={j['run_count']}")
+    elif args.op == "enable":
+        j = sched_mod.set_job(home, args.name, status="enabled")
+        if not j:
+            raise UsageError(f"unknown job {args.name!r}")
+        print(f"job '{args.name}' enabled")
+    elif args.op == "disable":
+        j = sched_mod.set_job(home, args.name, status="disabled")
+        if not j:
+            raise UsageError(f"unknown job {args.name!r}")
+        print(f"job '{args.name}' disabled")
+    elif args.op == "tick":
+        print(sched_mod.tick_summary(home))
+    elif args.op == "seed":
+        jobs = sched_mod.install_default_jobs(home)
+        print(f"seeded {len(jobs)} default job(s)")
+
+
+# --------------------------------------------------------------- workspace ---
+
+def cmd_workspace(args):
+    home = home_dir()
+    root = os.path.join(home, "workspaces")
+    if args.op == "init":
+        platform = (args.platform or "").strip().lower()
+        if not platform or not platform.replace("-", "").replace("_", "").isalnum():
+            raise UsageError("platform name must be alphanumeric")
+        wdir = os.path.join(root, platform)
+        os.makedirs(os.path.join(wdir, "state"), exist_ok=True)
+        cfg_path = os.path.join(wdir, "workspace.yaml")
+        if not os.path.exists(cfg_path):
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                fh.write(
+                    "# Workspace for %s. Shared core is NEVER duplicated"
+                    " here (see core/SHARED_CORE.md).\n"
+                    "platform: %s\nidentity: \"%s\"\naccounts: []\nnotes: \"\"\n"
+                    % (platform, platform, getattr(args, "identity", "") or ""))
+        print(f"workspace ready: {wdir}")
+        ident = getattr(args, "identity", "") or ""
+        if ident:
+            from identity import store as ident_store
+            ptr = ident_store.write_platform_profile_pointer(
+                home, platform, ident)
+            print(f"browser profile: pointer -> {ptr['profile_dir']}")
+            print("(one shared persistent profile per identity, all platforms)")
+        print("Shared core services (memory, browser engine, backup,")
+        print("scheduler, watcher engine, resume engine, editor, audio,")
+        print("captions, analytics, approvals) are used from their single")
+        print("instances — never copied into the workspace.")
+    elif args.op == "list":
+        if not os.path.isdir(root):
+            print("no workspaces yet")
+            return
+        for name in sorted(os.listdir(root)):
+            wdir = os.path.join(root, name)
+            if os.path.isdir(wdir):
+                print(name)
 
 
 # ---------------------------------------------------------------- browser ---
@@ -2501,7 +2860,7 @@ def cmd_doctor(args):
     except Exception as e:
         check("ToS rules parse", False, str(e))
     check("watcher types", True, ", ".join(sorted(REGISTRY)))
-    fx = os.path.join(REPO_ROOT, "watchers", "fixtures")
+    fx = FIXTURES_DIR
     nfx = len([f for f in os.listdir(fx) if f.endswith(".json")]) if os.path.isdir(fx) else 0
     check("sample fixtures", nfx > 0, f"{nfx} fixture files")
     check("credentials stored in repo", False, "good: none (by design)")
@@ -2630,6 +2989,13 @@ def build_parser():
     p.add_argument("id", nargs="?")
     p = w_sub.add_parser("run", help="run one poll tick now")
     p.add_argument("id")
+    p = w_sub.add_parser("register-platform",
+                         help="register every watcher a platform declares"
+                              " with the shared Watcher Engine")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", default="")
+    p.add_argument("--fixtures-dir", default=None,
+                   help="offline fixture dir (default: engine fixtures)")
     p = w_sub.add_parser("events", help="show recorded events")
     p.add_argument("--watcher", default=None)
     p.add_argument("--limit", type=int, default=20)
@@ -2850,7 +3216,62 @@ def build_parser():
     p = i_sub.add_parser("check", help="verify text is written as the owner")
     p.add_argument("--text", required=True)
     p.add_argument("--account", required=True)
+    p = i_sub.add_parser("add", help="create a persistent identity")
+    p.add_argument("--name", required=True)
+    p.add_argument("--owner", default="", help="owner's name")
+    i_sub.add_parser("list", help="list identities and their accounts")
+    p = i_sub.add_parser("link", help="link a social account to an identity (shares its browser profile)")
+    p.add_argument("--identity", required=True)
+    p.add_argument("--account", required=True, help="account label")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--handle", default="")
+    p = i_sub.add_parser("unlink", help="unlink an account from an identity")
+    p.add_argument("--identity", required=True)
+    p.add_argument("--account", required=True)
+    p = i_sub.add_parser("grant", help="grant an action to an identity")
+    p.add_argument("--identity", required=True)
+    p.add_argument("--action", required=True)
+    p = i_sub.add_parser("revoke", help="revoke an action from an identity")
+    p.add_argument("--identity", required=True)
+    p.add_argument("--action", required=True)
+    p = i_sub.add_parser("check-perm", help="fail-closed permission check for an identity")
+    p.add_argument("--identity", required=True)
+    p.add_argument("--action", required=True)
+    p = i_sub.add_parser("fingerprint", help="record the identity's real browser fingerprint notes")
+    p.add_argument("--identity", required=True)
+    p.add_argument("--set", action="append", default=[],
+                   help="k=v (user_agent, viewport, locale, timezone, notes)")
+    p = i_sub.add_parser("profile", help="show the identity's ONE shared browser profile")
+    p.add_argument("--identity", required=True)
     ident.set_defaults(func=cmd_identity)
+
+    sc = sub.add_parser("scheduler", help="shared-core scheduler (state in memory DB)")
+    sc_sub = sc.add_subparsers(dest="op", required=True)
+    p = sc_sub.add_parser("add", help="register a job")
+    p.add_argument("name")
+    p.add_argument("--kind", required=True, choices=("once", "interval", "daily"),
+                   help="once: --spec ISO run_at; interval: --spec seconds; daily: --spec HH:MM")
+    p.add_argument("--spec", default="")
+    p.add_argument("--payload", default="", help="JSON payload")
+    p = sc_sub.add_parser("list", help="list jobs")
+    p.add_argument("--status", default=None)
+    p = sc_sub.add_parser("enable", help="enable a job")
+    p.add_argument("name")
+    p = sc_sub.add_parser("disable", help="disable a job")
+    p.add_argument("name")
+    sc_sub.add_parser("tick", help="fire due jobs (idempotency-keyed intents)")
+    sc_sub.add_parser("seed", help="seed the default housekeeping jobs")
+    sc.set_defaults(func=cmd_scheduler)
+
+    ws = sub.add_parser("workspace", help="per-platform workspaces (shared core never duplicated)")
+    ws_sub = ws.add_subparsers(dest="op", required=True)
+    p = ws_sub.add_parser("init", help="create a workspace for any platform")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--identity", default="",
+                   help="identity id: writes the browser_profile pointer to"
+                        " that identity's ONE shared persistent profile")
+    ws_sub.add_parser("list", help="list workspaces")
+    ws.set_defaults(func=cmd_workspace)
 
     mo = sub.add_parser("moderate", help="moderate your OWN comment sections (approval-gated)")
     mo_sub = mo.add_subparsers(dest="op", required=True)
@@ -2988,6 +3409,61 @@ def build_parser():
     p.add_argument("--donts", default="", help="comma-separated don'ts")
     p = mv_sub.add_parser("show", help="show brand voice")
     p.add_argument("account")
+    p = mv_sub.add_parser("learn-example", help="teach the voice with a real example")
+    p.add_argument("account")
+    p.add_argument("--text", required=True, help="the owner's real writing")
+    p.add_argument("--kind", default="post", help="post|comment|dm|bio")
+    p = mv_sub.add_parser("learn-rule", help="teach the voice an explicit style rule")
+    p.add_argument("account")
+    p.add_argument("--text", required=True, help="the rule, e.g. never start with 'hey guys'")
+    mc2 = me_sub.add_parser("convo", help="conversation log (agent<->user turns)")
+    mc2_sub = mc2.add_subparsers(dest="cop", required=True)
+    p = mc2_sub.add_parser("log", help="log a turn worth remembering")
+    p.add_argument("role", choices=("user", "agent", "system"))
+    p.add_argument("--text", required=True)
+    p.add_argument("--account", default="")
+    p.add_argument("--mission", type=int, default=None)
+    p.add_argument("--kind", default="chat")
+    p = mc2_sub.add_parser("list", help="list logged turns")
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--account", default=None)
+    p.add_argument("--mission", type=int, default=None)
+    mm = me_sub.add_parser("missions", help="pending/active/completed missions + action ledger")
+    mm_sub = mm.add_subparsers(dest="mop", required=True)
+    p = mm_sub.add_parser("create", help="create a mission record")
+    p.add_argument("name")
+    p.add_argument("--type", default="custom")
+    p.add_argument("--account", default="")
+    p.add_argument("--spec", default="", help="JSON spec")
+    mm_sub.add_parser("list", help="list missions").add_argument(
+        "--status", default=None)
+    p = mm_sub.add_parser("set-status", help="change a mission's status")
+    p.add_argument("name")
+    p.add_argument("status", choices=("pending", "active", "paused", "held",
+                                      "completed", "failed", "cancelled"))
+    mm_sub.add_parser("pending", help="missions the resume engine picks up")
+    p = mm_sub.add_parser("ledger", help="completed actions ledger")
+    p.add_argument("--limit", type=int, default=100)
+    p.add_argument("--status", default=None)
+    ma2 = me_sub.add_parser("analytics", help="per-platform performance analytics")
+    ma2_sub = ma2.add_subparsers(dest="aop", required=True)
+    p = ma2_sub.add_parser("log", help="log a metric sample")
+    p.add_argument("platform")
+    p.add_argument("metric")
+    p.add_argument("value", type=float)
+    p.add_argument("--account", default="")
+    p.add_argument("--period", default="")
+    p = ma2_sub.add_parser("summary", help="latest values per metric")
+    p.add_argument("--platform", default=None)
+    p.add_argument("--account", default=None)
+    ms2 = me_sub.add_parser("sessions", help="browser session registry")
+    ms2_sub = ms2.add_subparsers(dest="sop", required=True)
+    p = ms2_sub.add_parser("list", help="list registered browser sessions")
+    p.add_argument("--status", default=None)
+    p = ms2_sub.add_parser("health", help="record a session health check")
+    p.add_argument("--account", required=True)
+    p.add_argument("--failed", action="store_true")
+    p.add_argument("--note", default="")
     ma = me_sub.add_parser("account", help="accounts in permanent memory")
     ma_sub = ma.add_subparsers(dest="aop", required=True)
     p = ma_sub.add_parser("add", help="register an account")
@@ -3006,9 +3482,11 @@ def build_parser():
     p.add_argument("id", type=int)
     me.set_defaults(func=cmd_memory)
 
-    bk = sub.add_parser("backup", help="content-addressed backups of the agent's life")
+    bk = sub.add_parser("backup", help="dual backup: local versioned + optional encrypted remote")
     bk_sub = bk.add_subparsers(dest="op", required=True)
-    bk_sub.add_parser("list", help="list snapshots")
+    p = bk_sub.add_parser("list", help="list snapshots")
+    p.add_argument("--versioned", action="store_true",
+                   help="list versioned disaster snapshots (backups/<ts>/)")
     p = bk_sub.add_parser("snapshot", help="take a manual snapshot")
     p.add_argument("--trigger", default="manual",
                    choices=("manual", "post_created", "video_rendered",
@@ -3016,19 +3494,43 @@ def build_parser():
                             "risky_action"))
     p.add_argument("--files", default="", help="comma-separated home-relative paths")
     p.add_argument("--note", default="")
+    p.add_argument("--versioned", action="store_true",
+                   help="immutable versioned snapshot of the protected set"
+                        " (backups/<timestamp>/ + latest pointer; cache excluded)")
     p = bk_sub.add_parser("diff", help="compare two snapshots")
     p.add_argument("id1")
     p.add_argument("id2")
     p = bk_sub.add_parser("restore", help="restore a snapshot (dry-run by default)")
-    p.add_argument("id", help="snapshot id")
+    p.add_argument("id", help="snapshot id (or timestamp, or 'latest' with --versioned)")
     p.add_argument("--apply", action="store_true",
                    help="stage the restore (never overwrites live files)")
+    p.add_argument("--versioned", action="store_true",
+                   help="restore a versioned disaster snapshot by timestamp")
+    p = bk_sub.add_parser("export", help="export a versioned snapshot as a portable bundle")
+    p.add_argument("id", help="snapshot timestamp (or 'latest')")
+    p.add_argument("--dest", required=True, help="bundle file path (.tar.gz)")
+    p = bk_sub.add_parser("import", help="import a portable bundle into this home")
+    p.add_argument("--bundle", required=True)
+    p.add_argument("--force", action="store_true",
+                   help="overwrite existing protected files")
+    p = bk_sub.add_parser("remote-setup", help="choose the optional remote backup provider")
+    p.add_argument("--provider", required=True,
+                   help="none|folder|github|gdrive|onedrive|dropbox|s3")
+    p.add_argument("--target", default="",
+                   help="folder path, owner/repo, rclone remote, or s3://bucket/prefix")
+    bk_sub.add_parser("remote-status", help="show remote backup config + sync readiness")
+    p = bk_sub.add_parser("sync", help="sync latest snapshot to the remote provider (consent-gated, encrypted)")
+    p.add_argument("--snapshot", default="latest",
+                   help="versioned snapshot timestamp (default: latest)")
     bk.set_defaults(func=cmd_backup)
 
     rc = sub.add_parser("recover", help="crash recovery: replay the action journal")
     rc.add_argument("--execute", action="store_true",
                     help="re-execute safe local work (renders); platform actions "
                          "are never auto-executed")
+    rc.add_argument("--full", action="store_true",
+                    help="full resume engine: snapshot -> profiles -> sessions ->"
+                         " journal -> missions -> verify -> continue plan")
     rc.set_defaults(func=cmd_recover)
 
     br = sub.add_parser("browser", help="persistent browser automation (no APIs)")

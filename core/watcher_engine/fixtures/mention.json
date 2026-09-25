@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "id": "m1",
+      "mentioned_account": "examuser",
+      "author": "fan1",
+      "text": "@examuser your sora video blew my mind"
+    },
+    {
+      "id": "m2",
+      "mentioned_account": "someoneelse",
+      "author": "fan2",
+      "text": "@someoneelse hi"
+    },
+    {
+      "id": "m3",
+      "mentioned_account": "examuser",
+      "author": "fan3",
+      "text": "tagging @examuser for the veo comparison"
+    }
+  ]
+}

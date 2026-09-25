@@ -7,10 +7,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from moderation import classify as mod
-from watchers.comment_watcher import CommentWatcher
+from core.watcher_engine import FIXTURES_DIR
+from core.watcher_engine.watchers.comment_watcher import CommentWatcher
 
-FIXTURE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "watchers", "fixtures", "comments_moderation.json")
+FIXTURE = os.path.join(FIXTURES_DIR, "comments_moderation.json")
 
 
 def test_toxic_flagged():

@@ -8,11 +8,10 @@ import pytest
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from watchers import REGISTRY, WatcherError
-from watchers.framework import Watcher
+from core.watcher_engine import REGISTRY, WatcherError, FIXTURES_DIR
+from core.watcher_engine.framework import Watcher
 
-FX = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                  "watchers", "fixtures")
+FX = FIXTURES_DIR
 
 
 def make(wtype, home, config=None, fixture=None):

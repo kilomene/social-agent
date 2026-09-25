@@ -113,6 +113,344 @@ def latest_id(home):
     return snaps[0]["id"] if snaps else None
 
 
+def validate_snapshot(home, snap_id):
+    """Is this snapshot structurally valid? (manifest parses, sane shape)."""
+    try:
+        m = _load_manifest(home, snap_id)
+    except (KeyError, ValueError):
+        return False, "manifest unreadable"
+    if not isinstance(m.get("files"), list):
+        return False, "manifest has no file list"
+    if not m.get("timestamp"):
+        return False, "manifest has no timestamp"
+    return True, "ok"
+
+
+def latest_valid_id(home):
+    """Newest snapshot that passes validation (falls back past corrupt ones)."""
+    for m in list_snapshots(home):
+        ok, _ = validate_snapshot(home, m["id"])
+        if ok:
+            return m["id"]
+    return None
+
+
+# ------------------------------------------- versioned disaster snapshots ---
+
+# Dual-backup architecture:
+#   PRIMARY (local):  immutable versioned snapshots under backups/<ts>/,
+#                     plus a `latest` pointer. No internet needed.
+#   SECONDARY (remote): optional, encrypted, consent-gated (core/remote.py).
+
+# Paths (home-relative) that are NEVER in a snapshot.
+CACHE_EXCLUDES = (
+    "cache/", "__pycache__/", ".pyc", ".tmp", ".DS_Store",
+    # chromium profile internals that are pure cache
+    "/Cache/", "/Code Cache/", "/GPUCache/", "/Service Worker/",
+)
+
+# The protected set: everything the agent must never lose.
+# Video projects / editable assets are configurable via
+# policy backups.include_projects (default True).
+PROTECTED_PATHS = (
+    "memory.db",                  # permanent memory (SQLite brain)
+    "identity/identities.db",     # identity registry
+    "identity/accounts/",         # per-account identity files
+    "identity/browser_profiles/", # account -> shared profile mapping
+    "identity/permissions/",      # per-identity grants
+    "identity/fingerprints/",     # per-identity fingerprint notes
+    "accounts/",                  # browser profiles + session sidecars
+    "audit/journal.jsonl",        # event journal (source of truth)
+    "missions/",                  # mission state files
+    "policy/policy.yaml",         # behavior config
+    "accounts.json",              # legacy account registry (if present)
+)
+
+
+def _is_excluded(rel_path):
+    rp = rel_path.replace(os.sep, "/")
+    for pat in CACHE_EXCLUDES:
+        if pat.endswith("/"):
+            if f"/{pat.strip('/')}/" in f"/{rp}/" or rp.startswith(pat):
+                return True
+        elif rp.endswith(pat):
+            return True
+    return False
+
+
+def _iter_protected_files(home, include_projects=True):
+    """Yield (home-relative path, absolute path) for the protected set."""
+    for entry in PROTECTED_PATHS:
+        apath = os.path.join(home, entry)
+        if entry.endswith("/"):
+            if not os.path.isdir(apath):
+                continue
+            for dp, dn, fn in os.walk(apath):
+                # prune cache dirs inside the walk
+                dn[:] = [d for d in dn
+                         if not _is_excluded(
+                             os.path.relpath(os.path.join(dp, d), home))]
+                for f in sorted(fn):
+                    rel = os.path.relpath(os.path.join(dp, f), home)
+                    if _is_excluded(rel):
+                        continue
+                    yield rel, os.path.join(dp, f)
+        else:
+            if os.path.isfile(apath) and not _is_excluded(entry):
+                yield entry, apath
+    if include_projects:
+        pdir = os.path.join(home, "projects")
+        if os.path.isdir(pdir):
+            for dp, dn, fn in os.walk(pdir):
+                dn[:] = [d for d in dn
+                         if not _is_excluded(
+                             os.path.relpath(os.path.join(dp, d), home))]
+                for f in sorted(fn):
+                    rel = os.path.relpath(os.path.join(dp, f), home)
+                    if _is_excluded(rel):
+                        continue
+                    yield rel, os.path.join(dp, f)
+
+
+def versioned_snapshot_name(when=None):
+    dt = when or datetime.now(timezone.utc)
+    return dt.strftime("%Y-%m-%d_%H-%M")
+
+
+def _latest_pointer(home):
+    return os.path.join(home, BACKUP_DIR, "latest")
+
+
+def resolve_latest(home):
+    """Resolve the `latest` pointer to a versioned snapshot dir name."""
+    p = _latest_pointer(home)
+    if os.path.islink(p):
+        target = os.readlink(p)
+        name = os.path.basename(target.rstrip(os.sep))
+        full = os.path.join(home, BACKUP_DIR, name)
+        if os.path.isdir(full):
+            return name
+    if os.path.isdir(p) and not os.path.islink(p):
+        # a real dir (older layout): treat as the latest snapshot itself
+        return "latest"
+    return None
+
+
+def list_versioned(home):
+    """All versioned snapshots, newest first."""
+    root = os.path.join(home, BACKUP_DIR)
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for name in sorted(os.listdir(root), reverse=True):
+        if name in ("manifests", "blobs", "restore_staging", "latest"):
+            continue
+        full = os.path.join(root, name)
+        man = os.path.join(full, "manifest.json")
+        if os.path.isdir(full) and os.path.isfile(man):
+            try:
+                with open(man, encoding="utf-8") as fh:
+                    out.append(json.load(fh))
+            except (OSError, ValueError):
+                continue
+    return out
+
+
+def versioned_snapshot(home, trigger="manual", note="", include_projects=True,
+                       policy=None):
+    """Take an immutable versioned snapshot: backups/<ts>/ + latest pointer.
+
+    Copies the protected set (never cache/temp), writes manifest.json,
+    and re-points `backups/latest`. Old versioned snapshots are never
+    modified — restore picks any of them by timestamp."""
+    if trigger not in TRIGGERS:
+        raise ValueError(f"bad trigger {trigger!r}")
+    if policy is not None:
+        include_projects = (policy.get("backups") or {}).get(
+            "include_projects", include_projects)
+    name = versioned_snapshot_name()
+    dest = os.path.join(home, BACKUP_DIR, name)
+    # timestamp collision (two snapshots in one minute): suffix
+    suffix = 0
+    while os.path.exists(dest):
+        suffix += 1
+        dest = os.path.join(home, BACKUP_DIR, f"{name}-{suffix:02d}")
+    name = os.path.basename(dest)
+    os.makedirs(dest, exist_ok=True)
+    files = []
+    for rel, apath in _iter_protected_files(home, include_projects):
+        target = os.path.join(dest, "files", rel)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(apath, target)
+        files.append({"path": rel, "sha256": _sha256_file(target),
+                      "size": os.path.getsize(target)})
+    try:
+        from core import memory as memory_mod
+        tables = memory_mod.table_hashes(home)
+    except Exception:  # noqa: BLE001 - snapshot must not fail on hashing
+        tables = {}
+    manifest = {
+        "id": name, "timestamp": utcnow(), "trigger": trigger,
+        "note": note, "files": files, "memory_tables": tables,
+        "versioned": True, "include_projects": include_projects,
+    }
+    with open(os.path.join(dest, "manifest.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+    # re-point latest (symlink; atomic replace)
+    link = _latest_pointer(home)
+    tmp_link = link + ".tmp"
+    try:
+        if os.path.islink(tmp_link) or os.path.exists(tmp_link):
+            os.remove(tmp_link)
+        os.symlink(name, tmp_link)
+        os.replace(tmp_link, link)
+    except OSError:
+        # filesystems without symlink support: record the name in a file
+        with open(os.path.join(home, BACKUP_DIR, "latest.txt"), "w",
+                   encoding="utf-8") as fh:
+            fh.write(name)
+    return manifest
+
+
+def versioned_restore_plan(home, name):
+    """What would restoring versioned snapshot <name> change? Dry-run."""
+    if name == "latest":
+        name = resolve_latest(home)
+        if not name:
+            raise KeyError("no latest snapshot")
+    dest = os.path.join(home, BACKUP_DIR, name)
+    man_path = os.path.join(dest, "manifest.json")
+    if not os.path.isfile(man_path):
+        raise KeyError(f"unknown versioned snapshot {name!r}")
+    with open(man_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    plan = []
+    for f in manifest.get("files", []):
+        src = os.path.join(dest, "files", f["path"])
+        if not os.path.isfile(src):
+            plan.append({"path": f["path"], "action": "skip-missing-in-snap"})
+            continue
+        apath = os.path.join(home, f["path"])
+        current = _sha256_file(apath) if os.path.isfile(apath) else None
+        if current == f["sha256"]:
+            plan.append({"path": f["path"], "action": "unchanged"})
+        elif current is None:
+            plan.append({"path": f["path"], "action": "would-create"})
+        else:
+            plan.append({"path": f["path"], "action": "would-overwrite"})
+    return {"snapshot": name, "timestamp": manifest.get("timestamp"),
+            "trigger": manifest.get("trigger"), "note": manifest.get("note"),
+            "changes": plan}
+
+
+def versioned_restore(home, name, dry_run=True):
+    """Restore a versioned snapshot. dry_run=True (default): plan only.
+    dry_run=False: stage into backups/restore_staging/<name>/ (never live)."""
+    if name == "latest":
+        name = resolve_latest(home)
+        if not name:
+            raise KeyError("no latest snapshot")
+    plan = versioned_restore_plan(home, name)
+    if dry_run:
+        return plan
+    dest = os.path.join(home, BACKUP_DIR, name)
+    stage = os.path.join(home, STAGING, name)
+    os.makedirs(stage, exist_ok=True)
+    with open(os.path.join(dest, "manifest.json"), encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    for f in manifest.get("files", []):
+        src = os.path.join(dest, "files", f["path"])
+        if not os.path.isfile(src):
+            continue
+        target = os.path.join(stage, f["path"])
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(src, target)
+    plan["staged_to"] = stage
+    return plan
+
+
+# ------------------------------------------------------- export / import ---
+
+def export_backup(home, name, dest_path):
+    """Export a versioned snapshot as a portable .tar.gz bundle.
+
+    The bundle imports cleanly into a fresh install on another VM."""
+    import tarfile
+    if name == "latest":
+        name = resolve_latest(home)
+        if not name:
+            raise KeyError("no latest snapshot")
+    src = os.path.join(home, BACKUP_DIR, name)
+    if not os.path.isdir(os.path.join(src, "manifest.json")) and \
+            not os.path.isfile(os.path.join(src, "manifest.json")):
+        raise KeyError(f"unknown versioned snapshot {name!r}")
+    dest_path = os.path.expanduser(dest_path)
+    os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+    with tarfile.open(dest_path, "w:gz") as tar:
+        tar.add(src, arcname=name)
+    return {"snapshot": name, "bundle": dest_path,
+            "size": os.path.getsize(dest_path)}
+
+
+def import_backup(home, bundle_path, force=False):
+    """Import a portable bundle into this home (fresh installs welcome).
+
+    Extracts to a staging dir, validates the manifest, then installs the
+    snapshot's files into the home tree. Refuses to overwrite existing
+    protected files without force=True."""
+    import tarfile
+    bundle_path = os.path.expanduser(bundle_path)
+    if not os.path.isfile(bundle_path):
+        raise KeyError(f"bundle not found: {bundle_path!r}")
+    stage = os.path.join(home, BACKUP_DIR, "import_staging")
+    if os.path.isdir(stage):
+        shutil.rmtree(stage)
+    os.makedirs(stage, exist_ok=True)
+    with tarfile.open(bundle_path, "r:gz") as tar:
+        # safety: refuse absolute paths / path traversal in the bundle
+        for m in tar.getmembers():
+            if m.name.startswith(("/", "..")) or "/../" in m.name:
+                raise ValueError(f"unsafe bundle member {m.name!r}")
+        tar.extractall(stage)
+    # find the snapshot dir (single top-level dir with manifest.json)
+    snap_dir = None
+    for entry in os.listdir(stage):
+        cand = os.path.join(stage, entry)
+        if os.path.isdir(cand) and os.path.isfile(
+                os.path.join(cand, "manifest.json")):
+            snap_dir = cand
+            break
+    if snap_dir is None:
+        raise ValueError("bundle contains no valid snapshot")
+    with open(os.path.join(snap_dir, "manifest.json"),
+              encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    if not isinstance(manifest.get("files"), list):
+        raise ValueError("bundle manifest is corrupt")
+    installed, skipped = [], []
+    files_root = os.path.join(snap_dir, "files")
+    for f in manifest["files"]:
+        src = os.path.join(files_root, f["path"])
+        if not os.path.isfile(src):
+            skipped.append(f["path"])
+            continue
+        # never let an import write outside the home tree
+        dest = os.path.normpath(os.path.join(home, f["path"]))
+        if not dest.startswith(os.path.normpath(home) + os.sep):
+            skipped.append(f["path"])
+            continue
+        if os.path.exists(dest) and not force:
+            skipped.append(f["path"] + " (exists)")
+            continue
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+        installed.append(f["path"])
+    shutil.rmtree(stage, ignore_errors=True)
+    return {"snapshot": manifest.get("id"), "installed": installed,
+            "skipped": skipped}
+
+
 def snapshot(home, trigger, files=(), note="", memory_tables=None):
     """Take a snapshot. ``files`` are home-relative (or absolute) paths;
     missing files are recorded as absent, never an error."""

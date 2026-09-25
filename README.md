@@ -1,7 +1,7 @@
 # social-agent
 
 An autonomous social-media monitoring toolkit for AI agents. Poll-based
-watchers observe TikTok, X, Instagram, Facebook, YouTube, and Reddit and
+watchers observe TikTok, X, Instagram, Facebook, YouTube, Reddit, and LinkedIn and
 **propose** actions; acting (post, like, comment, follow, retweet, DM) is
 dry-run by default and requires explicit per-action approval. Pure Python
 stdlib — no dependencies, no binaries, no credentials stored.
@@ -30,9 +30,9 @@ social-agent accounts add --platform tiktok --username somehandle --label main
 
 # start watchers (fixtures make everything work offline)
 social-agent watch start --type notification --platform tiktok --account main \
-    --fixture watchers/fixtures/notifications.json
+    --fixture core/watcher_engine/fixtures/notifications.json
 social-agent watch start --type trend --platform tiktok --account main \
-    --set use_interest_profile=true --fixture watchers/fixtures/trend.json
+    --set use_interest_profile=true --fixture core/watcher_engine/fixtures/trend.json
 
 # poll + review
 social-agent watch run <id>
@@ -117,7 +117,7 @@ production (captions, video, audio) — see guardrails §17–18:
 ```bash
 # classify comments: ok / question / praise / spam / toxic
 social-agent moderate scan --platform tiktok --account main --post v1 \
-    --fixture watchers/fixtures/comments_moderation.json
+    --fixture core/watcher_engine/fixtures/comments_moderation.json
 # propose hiding a comment (explicit approval required, or pre-approved rule)
 social-agent moderate hide --platform tiktok --account main --post v1 \
     --comment c3 --text "DM me for free crypto!!" --reason "DM scam"
@@ -301,11 +301,23 @@ bin/social-agent        CLI (accounts, watch, post, engage, mission, autonomy,
                         growth, youtube, voice, security, study, identity,
                         moderate, caption, video, audio, editor,
                         approvals, people, ratelimit, crisis, listen)
-watchers/               poll-based monitors; check() -> structured events (read-only)
-  framework.py          base class: config schema, state, idempotent dedupe, events.jsonl
-  notification|comment|feed|follow|activity|channel|message _watcher.py
-  trend|competitor|sentiment|mention|velocity|content-idea|crisis|security _watcher.py
+core/watcher_engine/    SINGLE watcher engine: lifecycle, scheduling, event dispatch,
+                        crash recovery (checkpoints live in the shared memory DB)
+  engine.py             register/enable/disable/poll/poll_platform/poll_all;
+                        duplicate registration refused (DuplicateWatcherError)
+  framework.py          Watcher base: config schema, idempotent dedupe, checkpoints,
+                        event-bus dispatch (events.jsonl kept as legacy mirror)
+  watchers/             the 15 watcher classes, exactly once (no per-platform copies)
   fixtures/             sample JSON feeds so everything runs offline
+platforms/<name>/       per-platform tree — registration + views ONLY, never shared core
+  __init__.py           adapter spec (declarative, browser-only)
+  terms.md / tos_rules.yaml
+                        per-platform ToS (fail-closed; checked first in the guard order)
+  watchers/             REGISTRATION manifest (which watchers + defaults)
+  memory/               namespaced VIEW into the shared DB (no .db copy)
+  browser_profile/      POINTER to the shared identity profile (no data)
+  workspace/            shipped workspace template (workspace.yaml + state/)
+                        shipped: tiktok, x, instagram, facebook, youtube, reddit, linkedin
 approvals/              unified human approval queue (pending/approved/rejected/held/rate_limited)
 people/                 people memory: interaction scores, notes, tags, top fans
 ratelimit/              central per-(platform,action) sliding-window controller

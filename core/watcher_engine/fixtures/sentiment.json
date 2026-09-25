@@ -1,0 +1,40 @@
+{
+  "items": [
+    {
+      "id": "s1",
+      "account": "examuser",
+      "author": "fan1",
+      "text": "love your ai video tutorials, amazing work"
+    },
+    {
+      "id": "s2",
+      "account": "examuser",
+      "author": "fan2",
+      "text": "great breakdown, so helpful thanks"
+    },
+    {
+      "id": "s3",
+      "account": "examuser",
+      "author": "fan3",
+      "text": "best creator for sora tips"
+    },
+    {
+      "id": "s4",
+      "account": "examuser",
+      "author": "hater1",
+      "text": "this is terrible and fake, awful content"
+    },
+    {
+      "id": "s5",
+      "account": "examuser",
+      "author": "hater2",
+      "text": "worst tutorial ever, hate this trash"
+    },
+    {
+      "id": "s6",
+      "account": "examuser",
+      "author": "hater3",
+      "text": "boring scam, horrible and disappointing"
+    }
+  ]
+}

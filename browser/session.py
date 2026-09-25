@@ -51,7 +51,18 @@ def account_dir(home, label):
 
 
 def profile_dir(home, label):
-    return os.path.join(account_dir(home, label), PROFILE_DIR)
+    """Profile dir for an account.
+
+    When the account is linked to an identity, this resolves to that
+    identity's ONE shared browser profile (all platforms, one human
+    browser). Otherwise it falls back to the legacy per-account dir.
+    """
+    legacy = os.path.join(account_dir(home, label), PROFILE_DIR)
+    try:
+        from identity import store as _ids
+        return _ids.resolve_profile_dir(home, label, legacy_dir=legacy)
+    except Exception:  # noqa: BLE001 - identity store is optional
+        return legacy
 
 
 def sidecar_path(home, label):
@@ -85,7 +96,17 @@ def init_profile(home, label, platform):
                  "profile_dir": pdir, "status": info.get("status", "new"),
                  "created_at": info.get("created_at", utcnow()),
                  "updated_at": utcnow()})
-    return save_session(home, label, info)
+    saved = save_session(home, label, info)
+    # register in permanent memory so the resume engine can cross-check
+    # the registry against the on-disk profile after a crash
+    try:
+        from core import memory as _mem
+        from identity import store as _ids
+        iid = _ids.identity_for_account(home, label) or ""
+        _mem.session_register(home, label, pdir, platform, identity_id=iid)
+    except Exception:  # noqa: BLE001 - memory registry is best-effort here
+        pass
+    return saved
 
 
 def detect_challenge(page_text):

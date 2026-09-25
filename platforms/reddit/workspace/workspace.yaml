@@ -1,0 +1,5 @@
+# Workspace for reddit. Shared core is NEVER duplicated here (see core/SHARED_CORE.md).
+platform: reddit
+identity: ""   # identity id owning the accounts used here (set via: identity link)
+accounts: []   # account labels operating in this workspace
+notes: ""

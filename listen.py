@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-from watchers import REGISTRY
+from core.watcher_engine import REGISTRY
 from moderation import classify as mod_classify
 from moderation import propose as mod_propose
 from people import db as people_db
@@ -73,7 +73,7 @@ def notify(home, text, kind="info"):
 
 def _sentiment(text):
     try:
-        from watchers.sentiment_watcher import lexicon_score
+        from core.watcher_engine.watchers.sentiment_watcher import lexicon_score
         return lexicon_score(text or "")
     except Exception:
         return None

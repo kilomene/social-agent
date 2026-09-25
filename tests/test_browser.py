@@ -119,7 +119,7 @@ def test_primitive_rate_limit_refusal(home):
 
 def test_recipes_have_maintenance_surface():
     assert set(RECIPES) == {"facebook", "instagram", "x", "youtube",
-                            "reddit", "tiktok"}
+                            "reddit", "tiktok", "linkedin"}
     for name, mod in RECIPES.items():
         assert mod.LAST_VERIFIED, name
         assert isinstance(mod.SELECTORS, dict) and mod.SELECTORS, name

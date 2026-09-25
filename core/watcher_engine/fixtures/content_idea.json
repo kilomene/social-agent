@@ -1,0 +1,40 @@
+{
+  "items": [
+    {
+      "id": "q1",
+      "author": "fan1",
+      "text": "Can you do a Sora camera moves tutorial?",
+      "likes": 120
+    },
+    {
+      "id": "q2",
+      "author": "fan2",
+      "text": "can you do a sora camera moves tutorial??",
+      "likes": 45
+    },
+    {
+      "id": "q3",
+      "author": "fan3",
+      "text": "Please make a Sora camera moves tutorial!",
+      "likes": 30
+    },
+    {
+      "id": "q4",
+      "author": "fan4",
+      "text": "love this",
+      "likes": 5
+    },
+    {
+      "id": "q5",
+      "author": "fan5",
+      "text": "CAN YOU DO A SORA CAMERA MOVES TUTORIAL",
+      "likes": 12
+    },
+    {
+      "id": "q6",
+      "author": "fan6",
+      "text": "what mic do you use?",
+      "likes": 3
+    }
+  ]
+}

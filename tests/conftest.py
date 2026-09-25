@@ -9,7 +9,8 @@ import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI = os.path.join(REPO, "bin", "social-agent")
-FIXTURES = os.path.join(REPO, "watchers", "fixtures")
+from core.watcher_engine import FIXTURES_DIR
+FIXTURES = FIXTURES_DIR
 
 
 @pytest.fixture

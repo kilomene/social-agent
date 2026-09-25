@@ -6,10 +6,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from watchers import REGISTRY
+from core.watcher_engine import REGISTRY
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FX = os.path.join(REPO, "watchers", "fixtures")
+from core.watcher_engine import FIXTURES_DIR
+FX = FIXTURES_DIR
 
 
 def load(name):

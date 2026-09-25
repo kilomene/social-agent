@@ -171,7 +171,7 @@ only acting pauses.
   agent's state (see §5).
 - `security audit` scans state files for secret-shaped content and prints
   hardening reminders; `security checklist` prints the review checklist.
-- `watchers/security_watcher.py` watches for account anomalies — sudden
+- `core/watcher_engine/watchers/security_watcher.py` watches for account anomalies — sudden
   follower purges, mass unfollow spikes, logins from unknown sessions — and
   fires **urgent** events so the owner can react (change password, revoke
   sessions, check 2FA).
@@ -352,7 +352,7 @@ only acting pauses.
 
 ## 25. Notification listener: poll fast, route carefully
 
-- `listen` is a fast-poll loop over notification/comment/message watchers
+- `listen` is a fast-poll loop over notification/comment/message watchers registered with the shared engine
   (`--once` for a single pass). It's poll-based by design — see
   `docs/listen-latency.md` for the honest latency expectations.
 - Routing: **question comments** → reply draft (gated by voice + identity

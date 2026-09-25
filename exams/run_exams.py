@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLI = os.path.join(REPO, "bin", "social-agent")
-FX = os.path.join(REPO, "watchers", "fixtures")
+sys.path.insert(0, REPO)
+from core.watcher_engine import FIXTURES_DIR
+FX = FIXTURES_DIR
 sys.path.insert(0, os.path.join(REPO, "tests"))
 from conftest import write_policy  # noqa: E402
 
@@ -1578,6 +1580,264 @@ def exam_62_browser_only_no_api_surface():
     return ex
 
 
+def exam_63_crash_mid_mission_no_duplicates():
+    ex = Exam("exam-63", "Kill mid-mission: full resume replays the journal, zero duplicated actions")
+    home = fresh_home()
+    setup_account(home)
+    sys.path.insert(0, REPO)
+    from core import recovery as rec
+    from core import memory as mem
+    run(home, None, "memory", "missions", "create", "deploy",
+        "--type", "publish")
+    run(home, None, "memory", "missions", "set-status", "deploy", "active")
+    # step 1: publish intent COMPLETES before the crash
+    b1 = rec.begin(home, "publish_post", "vid1", {"text": "hello"})
+    ex.check("first intent begins", not b1["duplicate"])
+    rec.end(home, b1["id"], True, result="posted as px1")
+    # step 2: intent begins, then the VM DIES before end() — crash residue
+    b2 = rec.begin(home, "publish_post", "vid2", {"text": "world"})
+    ex.check("second intent begins (crash residue)", not b2["duplicate"])
+    # --- crash. agent restarts: full resume engine ---
+    r = run(home, None, "recover", "--full")
+    ex.check("full resume runs clean", r.returncode == 0,
+             (r.stderr.strip() + r.stdout.strip())[:120])
+    ex.check("unfinished step reported resumable, never auto-executed",
+             "RESUMABLE: publish_post vid2" in r.stdout,
+             r.stdout[:300])
+    # the killer check: re-beginning the completed step is refused
+    b1_again = rec.begin(home, "publish_post", "vid1", {"text": "hello"})
+    ex.check("completed action can NEVER be duplicated",
+             b1_again.get("duplicate") is True)
+    keys = mem.ledger_completed_keys(home)
+    ex.check("ledger holds exactly the one completed action",
+             keys == {b1["idem_key"]}, f"{len(keys)} keys")
+    ex.check("mission continues in the resume plan",
+             "mission: resume 'deploy' [active]" in r.stdout,
+             r.stdout[:400])
+    return ex
+
+
+def exam_64_backup_portability():
+    ex = Exam("exam-64", "Backup exported from one home imports cleanly into a fresh home")
+    home = fresh_home()
+    sys.path.insert(0, REPO)
+    from core import memory as mem
+    run(home, None, "memory", "account", "add", "main", "tiktok",
+        "--handle", "nova")
+    run(home, None, "memory", "convo", "log", "user",
+        "--text", "portable memory check")
+    run(home, None, "memory", "missions", "create", "portable-mission")
+    run(home, None, "memory", "voice", "set", "main", "--tone", "playful")
+    r = run(home, None, "backup", "snapshot", "--versioned",
+            "--note", "portability exam")
+    ex.check("versioned snapshot taken", r.returncode == 0 and
+             "versioned snapshot" in r.stdout, r.stderr.strip()[:100])
+    bundle = os.path.join(home, "portable.tar.gz")
+    r = run(home, None, "backup", "list", "--versioned")
+    snap_id = [l.split()[0] for l in r.stdout.splitlines()
+               if l.strip() and not l.startswith("no ")][0]
+    r = run(home, None, "backup", "export", snap_id, "--dest", bundle)
+    ex.check("export produces a bundle", r.returncode == 0 and
+             os.path.isfile(bundle), (r.stderr.strip() + r.stdout)[:120])
+    # import into a FRESH home (another VM)
+    fresh = fresh_home()
+    r = run(fresh, None, "backup", "import", "--bundle", bundle)
+    ex.check("import succeeds into fresh home", r.returncode == 0,
+             (r.stderr.strip() + r.stdout.strip())[:150])
+    ex.check("account survived the trip",
+             (mem.get_account(fresh, "main") or {}).get("handle") == "nova")
+    ex.check("conversation survived the trip",
+             any(c["text"] == "portable memory check"
+                 for c in mem.convo_list(fresh)))
+    ex.check("mission survived the trip",
+             mem.mission_get(fresh, "portable-mission") is not None)
+    ex.check("brand voice survived the trip",
+             mem.voice_profile(fresh, "main")["tone_profile"] == "playful")
+    return ex
+
+
+def exam_65_remote_sync_consent_and_encryption_gated():
+    ex = Exam("exam-65", "Remote sync refuses without consent; encrypted folder roundtrip works")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "backup", "snapshot", "--versioned")
+    r = run(home, None, "backup", "sync")
+    ex.check("sync refused with no provider/consent",
+             r.returncode == 2 and "refused" in r.stderr.lower(),
+             r.stderr.strip()[:120])
+    r = run(home, None, "backup", "remote-status")
+    ex.check("remote-status reports offline-only", "not configured" in r.stdout,
+             r.stdout.strip()[:100])
+    target = os.path.join(home, "external-drive")
+    r = run(home, None, "backup", "remote-setup", "--provider", "folder",
+            "--target", target)
+    ex.check("explicit setup records consent", r.returncode == 0 and
+             "granted" in r.stdout, r.stdout.strip()[:120])
+    r = run(home, None, "backup", "sync")
+    ex.check("consented sync uploads an encrypted bundle", r.returncode == 0,
+             (r.stderr.strip() + r.stdout.strip())[:150])
+    bundles = [f for f in os.listdir(target) if f.endswith(".sar.enc")] \
+        if os.path.isdir(target) else []
+    ex.check("exactly one encrypted bundle landed remotely",
+             len(bundles) == 1, str(bundles)[:80])
+    if bundles:
+        blob = open(os.path.join(target, bundles[0]), "rb").read()
+        ex.check("bundle is encrypted (no plaintext state inside)",
+                 b"memory.db" not in blob and b"sqlite" not in blob.lower(),
+                 f"{len(blob)} bytes")
+    log = os.path.join(home, "backups", "remote_sync.jsonl")
+    ex.check("sync is audit-logged", os.path.isfile(log))
+    return ex
+
+
+def exam_66_cache_excluded_from_snapshots():
+    ex = Exam("exam-66", "Cache/temp files are never in a versioned snapshot")
+    home = fresh_home()
+    sys.path.insert(0, REPO)
+    from core import backup as bmod
+    os.makedirs(os.path.join(home, "cache"), exist_ok=True)
+    with open(os.path.join(home, "cache", "MARKER.tmp"), "w") as fh:
+        fh.write("do-not-back-me-up")
+    pycache = os.path.join(home, "projects", "__pycache__")
+    os.makedirs(pycache, exist_ok=True)
+    with open(os.path.join(pycache, "junk.pyc"), "w") as fh:
+        fh.write("bytecode")
+    run(home, None, "memory", "convo", "log", "user",
+        "--text", "real state")
+    r = run(home, None, "backup", "snapshot", "--versioned")
+    ex.check("snapshot succeeds", r.returncode == 0, r.stderr.strip()[:100])
+    latest = bmod.resolve_latest(home)
+    man_path = os.path.join(home, "backups", latest, "manifest.json")
+    manifest = json.load(open(man_path))
+    paths = [f["path"] for f in manifest.get("files", [])]
+    ex.check("no cache/ paths in snapshot",
+             not any(p.startswith("cache/") for p in paths),
+             str([p for p in paths if "cache" in p])[:80])
+    ex.check("no __pycache__/.pyc in snapshot",
+             not any("__pycache__" in p or p.endswith(".pyc") for p in paths))
+    ex.check("real state IS in the snapshot",
+             any(p == "memory.db" for p in paths), str(len(paths)))
+    return ex
+
+
+def exam_67_watcher_checkpoint_resume_per_platform():
+    ex = Exam("exam-67", "Kill mid-poll: resume replays checkpoints, no missed/duplicate events")
+    home = fresh_home()
+    setup_account(home)
+    sys.path.insert(0, REPO)
+    from core.watcher_engine import WatcherEngine
+    from core import memory as mem
+    for platform in ("tiktok", "youtube"):
+        fx = os.path.join(home, f"notifs_{platform}.json")
+        with open(fx, "w") as fh:
+            json.dump([
+                {"id": "a", "kind": "mention", "author": "x", "text": "hi"},
+                {"id": "b", "kind": "like", "author": "y"},
+            ], fh)
+        wid = f"{platform}:notification"
+        e = WatcherEngine(home)
+        e.register(wid, "notification", platform, "main", fixture=fx)
+        ev1 = e.poll(wid)
+        ex.check(f"{platform}: first poll finds 2 events", len(ev1) == 2)
+        # --- VM dies mid-stream. New engine instance, same home ---
+        with open(fx, "w") as fh:
+            json.dump([
+                {"id": "a", "kind": "mention", "author": "x", "text": "hi"},
+                {"id": "b", "kind": "like", "author": "y"},
+                {"id": "c", "kind": "follow", "author": "z"},
+            ], fh)
+        e2 = WatcherEngine(home)
+        ev2 = e2.poll(wid)
+        ex.check(f"{platform}: resume finds ONLY the new event",
+                 [v["data"]["id"] for v in ev2] == ["c"],
+                 str([v["data"]["id"] for v in ev2]))
+        cp = mem.checkpoint_get(home, wid)
+        ex.check(f"{platform}: checkpoint in shared memory DB",
+                 cp is not None and len(cp["cursor"]["seen_ids"]) == 3,
+                 str((cp or {}).get("cursor", {}).get("seen_ids")))
+    return ex
+
+
+def exam_68_duplicate_watcher_registration_refused():
+    ex = Exam("exam-68", "Duplicate-named watcher registration is refused")
+    home = fresh_home()
+    setup_account(home)
+    sys.path.insert(0, REPO)
+    from core.watcher_engine import WatcherEngine, DuplicateWatcherError
+    e = WatcherEngine(home)
+    e.register("tiktok:notification", "notification", "tiktok", "main")
+    try:
+        e.register("tiktok:notification", "notification", "tiktok", "main")
+        refused = False
+    except DuplicateWatcherError:
+        refused = True
+    ex.check("engine refuses duplicate watcher id", refused)
+    # registering the same platform manifest twice is refused per-watcher
+    import platforms.tiktok.watchers as tw
+    home2 = fresh_home()
+    e2 = WatcherEngine(home2)
+    tw.register(e2, account="main")
+    try:
+        tw.register(e2, account="main")
+        refused2 = False
+    except DuplicateWatcherError:
+        refused2 = True
+    ex.check("platform re-registration refused", refused2)
+    # CLI surface: second register-platform fails loudly
+    r = run(home2, None, "watch", "register-platform",
+            "--platform", "tiktok", "--account", "main")
+    ex.check("CLI register-platform refuses duplicates",
+             r.returncode != 0 and "already registered" in
+             (r.stderr + r.stdout), (r.stderr + r.stdout)[:120])
+    # the registry still holds exactly one copy
+    ids = [w["id"] for w in e2.list(platform="tiktok")]
+    ex.check("no duplicate rows in registry",
+             ids.count("tiktok:notification") == 1, str(len(ids)))
+    return ex
+
+
+def exam_69_linkedin_watcher_lifecycle():
+    ex = Exam("exam-69", "LinkedIn watcher lifecycle via the shared Watcher Engine")
+    home = fresh_home()
+    setup_account(home)
+    sys.path.insert(0, REPO)
+    from core.watcher_engine import WatcherEngine
+    from core import memory as mem
+    r = run(home, None, "watch", "register-platform",
+            "--platform", "linkedin", "--account", "main")
+    ex.check("linkedin platform registers via CLI", r.returncode == 0 and
+             "14 watcher(s)" in r.stdout, r.stdout.strip()[:100])
+    e = WatcherEngine(home)
+    recs = e.watchers_for_platform("linkedin")
+    ex.check("14 linkedin watchers registered", len(recs) == 14,
+             str(len(recs)))
+    # lifecycle: disable -> poll skips -> enable -> poll works
+    e.disable("linkedin:notification")
+    res = e.poll_platform("linkedin")
+    ex.check("disabled watcher is skipped",
+             "linkedin:notification" not in res, str(sorted(res))[:80])
+    e.enable("linkedin:notification")
+    events = e.poll("linkedin:notification")
+    ex.check("re-enabled watcher polls", len(events) == 4,
+             str(len(events)))
+    cp = mem.checkpoint_get(home, "linkedin:notification")
+    ex.check("linkedin checkpoint in shared memory DB",
+             cp is not None and cp["platform"] == "linkedin")
+    # resume engine replays the linkedin checkpoint
+    r = run(home, None, "recover", "--full")
+    ex.check("full resume replays linkedin checkpoint",
+             "linkedin:notification [linkedin/notification]" in r.stdout,
+             r.stdout[-400:])
+    # linkedin memory view is platform-namespaced
+    import platforms.linkedin.memory as lmem
+    v = lmem.view(home)
+    ex.check("linkedin memory view namespaced",
+             v.platform == "linkedin" and
+             any(c["watcher_id"] == "linkedin:notification"
+                 for c in v.watcher_checkpoints()))
+    return ex
+
+
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
          exam_3_rate_limit_enforced,
@@ -1639,7 +1899,14 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_59_browser_profile_persists,
          exam_60_browser_like_uses_rate_limits,
          exam_61_browser_challenge_pauses_with_notification,
-         exam_62_browser_only_no_api_surface]
+         exam_62_browser_only_no_api_surface,
+         exam_63_crash_mid_mission_no_duplicates,
+         exam_64_backup_portability,
+         exam_65_remote_sync_consent_and_encryption_gated,
+         exam_66_cache_excluded_from_snapshots,
+         exam_67_watcher_checkpoint_resume_per_platform,
+         exam_68_duplicate_watcher_registration_refused,
+         exam_69_linkedin_watcher_lifecycle]
 
 
 def main():

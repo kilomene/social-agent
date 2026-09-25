@@ -1,0 +1,65 @@
+# Machine-readable ToS rules for LinkedIn.
+# Plain-language summaries only; the official documents govern (see terms.md).
+# Last checked: 2026-09-25. These documents change over time; re-check periodically.
+# NOTE: LinkedIn's User Agreement prohibits scraping, crawling, and the use of
+# bots/crawlers/browser add-ons for automation without permission. This tool
+# is browser-driven (no API) by the owner's explicit order, so several
+# automation categories are outright prohibited here; the owner's informed
+# opt-in is tos.acknowledged_risk (restriction risk logged per action).
+platform: linkedin
+display_name: LinkedIn
+last_checked: 2026-09-25
+actions:
+  automated_likes:
+    status: prohibited
+    basis: "LinkedIn's User Agreement prohibits bots and automated methods for engagement; automated liking via this browser-driven tool is not permitted."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+      - https://www.linkedin.com/legal/professional-community-policies
+  automated_comments:
+    status: prohibited
+    basis: "Automated commenting is an unauthorized automated method under the User Agreement; automated commenting via this tool is not permitted."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+      - https://www.linkedin.com/legal/professional-community-policies
+  automated_follows:
+    status: prohibited
+    basis: "Bulk or automated connection/follow activity violates the User Agreement's limits on invitations and automated behavior; automated follows/connects via this tool are not permitted."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+  automated_reshares:
+    status: prohibited
+    basis: "Automated resharing for reach is an unauthorized automated method; automated reshares via this tool are not permitted."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+  automated_dms:
+    status: prohibited
+    basis: "Bulk or automated messaging violates the Professional Community Policies (spam). Automated DMs via this tool are not permitted."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+      - https://www.linkedin.com/legal/professional-community-policies
+  automated_posting:
+    status: restricted
+    basis: "Posting must be human-directed and non-spammy. This tool is browser-only by the owner's explicit order and never uses an API; it only drafts posts and records explicit human approval, never publishing by itself."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+  automated_data_collection:
+    status: prohibited
+    basis: "The User Agreement prohibits scraping, crawling, or using bots/crawlers to collect data. Browser-based data collection by this tool is not permitted."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+  profile_modification:
+    status: restricted
+    basis: "Account changes must be human-directed. This tool only proposes profile changes; they require explicit human approval and are applied by the user."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+  automated_reading:
+    status: restricted
+    basis: "Keep automated reading low-volume and limited to the user's own account/network. It is not affirmatively permitted; this tool reads only through the logged-in browser session, low-volume and own-account."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement
+  comment_moderation:
+    status: allowed
+    basis: "Creators may moderate comments on their own posts. This tool only moderates the user's OWN post comment sections, proposes hides, and requires explicit approval or a pre-approved policy rule before anything is hidden; it never touches anyone else's content."
+    sources:
+      - https://www.linkedin.com/legal/user-agreement

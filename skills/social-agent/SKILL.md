@@ -1,6 +1,6 @@
 ---
 name: "social-agent"
-description: "Autonomous social-media monitoring toolkit: 14 poll-based watchers (notifications, comments, feed, follows, activity, channels, messages, trends, competitors, sentiment, mentions, velocity, content-ideas, crisis) plus approval-gated posting, selective engagement (like/follow only what's interesting, spam-guarded), scoped autonomous missions, and protocol-compatible heartbeats across TikTok, X, Instagram, Facebook, YouTube, Reddit. Watchers observe and propose; acting requires explicit per-action approval or a scoped autonomy grant. Pure stdlib, works offline."
+description: "Autonomous social-media monitoring toolkit: 15 poll-based watchers (notifications, comments, feed, follows, activity, channels, messages, trends, competitors, sentiment, mentions, velocity, content-ideas, crisis, security) plus approval-gated posting, selective engagement (like/follow only what's interesting, spam-guarded), scoped autonomous missions, and protocol-compatible heartbeats across TikTok, X, Instagram, Facebook, YouTube, Reddit, LinkedIn. Watchers observe and propose; acting requires explicit per-action approval or a scoped autonomy grant. Pure stdlib, works offline."
 ---
 
 # social-agent skill
@@ -93,11 +93,11 @@ social-agent accounts add --platform tiktok --username somehandle --label main
 
 # 2. Start watchers (fixtures let everything run offline)
 social-agent watch start --type notification --platform tiktok --account main \
-  --fixture watchers/fixtures/notifications.json
+  --fixture core/watcher_engine/fixtures/notifications.json
 social-agent watch start --type trend --platform tiktok --account main \
-  --set use_interest_profile=true --fixture watchers/fixtures/trend.json
+  --set use_interest_profile=true --fixture core/watcher_engine/fixtures/trend.json
 social-agent watch start --type crisis --platform tiktok --account main \
-  --fixture watchers/fixtures/crisis.json
+  --fixture core/watcher_engine/fixtures/crisis.json
 
 # 3. Poll (each run emits a heartbeat: <watcher-id>/start -> ok|/fail)
 social-agent watch run <watcher-id>
@@ -172,7 +172,7 @@ deltas digest) `sentiment` (sentiment-shift alerts) `mention` (unified
 @mentions) `velocity` (viral-velocity early alerts) `content-idea` (repeated
 audience questions → video ideas) `crisis` (negative-spike urgent alerts)
 `security` (follower purges, mass unfollows, unknown sessions — urgent alerts)
-— see `watchers/` for each config schema.
+— see `core/watcher_engine/watchers/` for each config schema.
 
 ## Moderation + content production
 

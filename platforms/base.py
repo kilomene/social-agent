@@ -9,7 +9,7 @@ in a real browser session driven by the user's agent; the adapter tells
 that agent exactly what is possible.
 """
 
-SUPPORTED_PLATFORMS = ["tiktok", "x", "instagram", "facebook", "youtube", "reddit"]
+SUPPORTED_PLATFORMS = ["tiktok", "x", "instagram", "facebook", "youtube", "reddit", "linkedin"]
 
 
 class AdapterSpec:
@@ -40,10 +40,11 @@ class AdapterSpec:
 
 
 def get_adapter(name):
-    from . import tiktok, x, instagram, facebook, youtube, reddit
+    from . import tiktok, x, instagram, facebook, youtube, reddit, linkedin
     mods = {
         "tiktok": tiktok, "x": x, "instagram": instagram,
         "facebook": facebook, "youtube": youtube, "reddit": reddit,
+        "linkedin": linkedin,
     }
     key = name.lower()
     if key not in mods:
