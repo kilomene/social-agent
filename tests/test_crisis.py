@@ -17,7 +17,7 @@ def test_crisis_blocks_acting_but_not_watchers(home):
     add_account(home)
     assert cli("crisis", "on", "--reason", "test spike", home=home).returncode == 0
     r = cli("engage", "follow", "--platform", "tiktok", "--account", "main",
-            "--target", "someone", home=home)
+            "--target", "https://example.com/u/someone", home=home)
     assert r.returncode == 2
     assert "crisis" in r.stderr.lower()
     # read-only monitoring still works
@@ -30,7 +30,7 @@ def test_crisis_blocks_acting_but_not_watchers(home):
 def test_crisis_holds_pending_and_repends_on_off(home):
     add_account(home)
     cli("engage", "follow", "--platform", "tiktok", "--account", "main",
-        "--target", "someone", home=home)
+        "--target", "https://example.com/u/someone", home=home)
     qid = _pending_item(home)["id"]
     cli("crisis", "on", home=home)
     assert _pending_item(home)["status"] == "held"
@@ -39,7 +39,7 @@ def test_crisis_holds_pending_and_repends_on_off(home):
     assert _pending_item(home)["status"] == "pending"
     # held items need explicit re-approval; acting works again
     r = cli("engage", "follow", "--platform", "tiktok", "--account", "main",
-            "--target", "other", home=home)
+            "--target", "https://example.com/u/other", home=home)
     assert r.returncode == 0
     # the re-pended item is NOT auto-approved: still needs a human decision
     r = cli("approvals", "approve", "--id", qid, home=home)

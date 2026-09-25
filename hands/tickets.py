@@ -132,6 +132,14 @@ def _target_of(params):
             or params.get("url") or params.get("thread") or "")
 
 
+# Actions whose tickets are fulfilled by opening a target in the live
+# browser. Issuance refuses targets that are not resolvable URLs (e.g.
+# synthetic watcher-fixture ids) — see issue_from_approval.
+# Names are ticket actions (post TYPE_TO_ACTION mapping).
+_TARGET_REQUIRED_ACTIONS = {"like", "comment", "follow", "unfollow",
+                            "reshare", "hide_comment", "subscribe"}
+
+
 def issue(home, action, platform, account, target="", parameters=None,
           receipts=None, source=None):
     """Emit an execution ticket in ``issued`` status and return it."""
@@ -183,6 +191,20 @@ def issue_from_approval(home, item, decided_by="user", decided_at=""):
         from platforms import tos as _tos_mod  # lazy: avoids import cycles
         _tos_mod.check_tos(item.get("platform", ""), "automated_dms",
                            home=home)
+    if action in _TARGET_REQUIRED_ACTIONS:
+        # Targeted actions (like/comment/follow/...) are fulfilled by
+        # opening the target in a live browser. Watcher fixtures emit
+        # synthetic event ids (e.g. "f1") with no URL — issuing a ticket
+        # for one hands the external agent an unfulfillable job. Refuse
+        # at issuance so the approval surfaces the problem instead.
+        target = ((item.get("payload") or {}).get("target_url")
+                  or (item.get("payload") or {}).get("target")
+                  or (item.get("payload") or {}).get("url") or "")
+        if "://" not in target:
+            raise ValueError(
+                f"refusing {action} ticket: target {target!r} is not a "
+                f"resolvable URL (fixture/synthetic event — nothing real "
+                f"to act on in the live browser)")
     receipts = {
         "tos": {
             "risk": item.get("risk", ""),

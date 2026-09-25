@@ -252,3 +252,32 @@ def test_no_credential_fields_in_host_sessions(home):
     for name in _credentialish_names(sessions):
         assert not CREDENTIAL_WORDS.search(name), \
             f"credential-like field in host sessions: {name!r}"
+
+
+def _approval_item(itype="like", target="f1"):
+    return {"id": "q-test", "type": itype, "platform": "facebook",
+            "account": "main", "risk": "low", "summary": "test proposal",
+            "payload": {"target": target}}
+
+
+def test_issue_from_approval_refuses_fixture_target(home):
+    """Regression: a targeted action whose target is a synthetic watcher-
+    fixture id (no URL) must not mint a hands ticket — live 2026-09-25,
+    tkt-acbc13 was issued for fixture target 'f1' and unfulfillable."""
+    with pytest.raises(ValueError, match="not a resolvable URL"):
+        tickets.issue_from_approval(home, _approval_item("like", "f1"))
+
+
+def test_issue_from_approval_accepts_real_url_target(home):
+    t = tickets.issue_from_approval(
+        home, _approval_item("like", "https://www.facebook.com/post/123"))
+    assert t["status"] == "issued"
+    assert t["target"] == "https://www.facebook.com/post/123"
+
+
+def test_issue_from_approval_post_needs_no_target(home):
+    item = {"id": "q-test2", "type": "post", "platform": "facebook",
+            "account": "main", "risk": "low", "summary": "test post",
+            "payload": {"text": "hello world"}}
+    t = tickets.issue_from_approval(home, item)
+    assert t["status"] == "issued" and t["action"] == "post_text"

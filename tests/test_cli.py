@@ -85,7 +85,7 @@ def test_post_flow(home):
 def test_engage_dry_run_default_and_approval_gate(home):
     add_account(home)
     r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "vid1", home=home)
+            "--target", "https://example.com/v/vid1", home=home)
     assert r.returncode == 0
     assert "DRY-RUN" in r.stdout and "No action was taken" in r.stdout
     actions = state(home, "actions.json")
@@ -104,7 +104,7 @@ def test_engage_dry_run_default_and_approval_gate(home):
 def test_engage_comment_requires_text(home):
     add_account(home)
     r = cli("engage", "comment", "--platform", "tiktok", "--account", "main",
-            "--target", "vid1", home=home)
+            "--target", "https://example.com/v/vid1", home=home)
     assert r.returncode == 1 and "--text" in r.stderr
 
 
@@ -115,7 +115,7 @@ def test_ticket_lifecycle_via_approval(home):
     add_account(home)
     # 1. propose (dry-run, queued for human approval)
     r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "vid9", home=home)
+            "--target", "https://example.com/v/vid9", home=home)
     assert r.returncode == 0, r.stderr
     aid = state(home, "actions.json")[0]["id"]
     # 2. human approves -> an execution ticket is ISSUED
@@ -193,7 +193,7 @@ def test_ticket_cancel_and_fail(home, tmp_path):
                        engagement={"min_seconds_between_likes": 0})
     add_account(home)
     r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "vidA", home=home, policy=pol)
+            "--target", "https://example.com/v/vidA", home=home, policy=pol)
     assert r.returncode == 0, r.stderr
     aid = state(home, "actions.json")[0]["id"]
     assert cli("engage", "approve", aid, home=home, policy=pol).returncode == 0
@@ -203,7 +203,7 @@ def test_ticket_cancel_and_fail(home, tmp_path):
     assert state(home, "tickets.json")[0]["status"] == "cancelled"
     # a second proposal -> ticket -> external agent reports failure
     r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "vidB", home=home, policy=pol)
+            "--target", "https://example.com/v/vidB", home=home, policy=pol)
     assert r.returncode == 0, r.stderr
     aid2 = state(home, "actions.json")[1]["id"]
     assert cli("engage", "approve", aid2, home=home, policy=pol).returncode == 0

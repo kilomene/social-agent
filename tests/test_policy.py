@@ -39,10 +39,10 @@ def test_rate_limit_enforced(tmp_path, home):
                                               "actions_per_day": 1}})
     add_account(home)
     r1 = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-             "--target", "v1", home=home, policy=pol)
+             "--target", "https://example.com/v/1", home=home, policy=pol)
     assert r1.returncode == 0
     r2 = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-             "--target", "v2", home=home, policy=pol)
+             "--target", "https://example.com/v/2", home=home, policy=pol)
     assert r2.returncode == 2
     assert "REFUSED" in r2.stderr and "rate limit" in r2.stderr
 
@@ -53,7 +53,7 @@ def test_quiet_hours_block_acting(tmp_path, home):
                                     "end": "23:59"})
     add_account(home)
     r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "v1", home=home, policy=pol)
+            "--target", "https://example.com/v/1", home=home, policy=pol)
     assert r.returncode == 2
     assert "quiet hours" in r.stderr
     # watchers (read-only) still work during quiet hours
@@ -64,7 +64,7 @@ def test_quiet_hours_block_acting(tmp_path, home):
 def test_approval_expiry(tmp_path, home):
     add_account(home)
     cli("engage", "like", "--platform", "tiktok", "--account", "main",
-        "--target", "v1", home=home)
+        "--target", "https://example.com/v/1", home=home)
     actions = state(home, "actions.json")
     aid = actions[0]["id"]
     assert cli("engage", "approve", aid, home=home).returncode == 0

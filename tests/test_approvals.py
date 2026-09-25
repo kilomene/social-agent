@@ -11,7 +11,7 @@ from conftest import add_account, cli, state, write_policy
 
 def _propose_via_engage(home):
     r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "v9", home=home)
+            "--target", "https://example.com/v/9", home=home)
     assert r.returncode == 0, r.stderr
     items = state(home, "approvals/pending.json")
     assert len(items) == 1
@@ -63,7 +63,7 @@ def test_per_type_auto_policy(tmp_path, home):
                        approvals={"per_type": {"like": "auto"}})
     add_account(home)
     r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "v9", home=home, policy=pol)
+            "--target", "https://example.com/v/9", home=home, policy=pol)
     assert r.returncode == 0, r.stderr
     assert "AUTO-APPROVED" in r.stdout
     items = state(home, "approvals/pending.json")
