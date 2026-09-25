@@ -309,17 +309,45 @@ def test_approval_of_dm_item_issues_dm_send_ticket(home, monkeypatch):
     assert "—" not in t["parameters"]["draft"]
 
 
-def test_dm_send_respects_tos_refusal(home):
+def test_dm_send_refused_at_ticket_issuance_on_x(home):
     # Real ToS layer, no monkeypatch: X automated_dms is prohibited.
+    # Drafting is proposing (allowed); the SEND is what the pipeline
+    # refuses — at ticket issuance, not at draft time.
+    from platforms.tos import ToSRefusal
     a = _start(home)
     now = time.time()
     res = a.report(_msgs(("c1", "m1", "them", "hey there", now - 5)))
     t = res["threads"][0]
-    assert len(t["refused"]) == 1
-    assert "automated_dms" in t["refused"][0]["reason"]
-    assert t["replies_queued"] == []
+    assert t["refused"] == []
+    assert len(t["replies_queued"]) == 1
+    qid = t["replies_queued"][0]["approval_id"]
     # cursor still advances: seen means seen
     assert dm_state.get_last_seen(home, "x", "main", "c1") == "m1"
+    # approving must NOT issue a dm_send ticket on X: prohibited.
+    with pytest.raises(ToSRefusal):
+        aq.approve(home, qid, decided_by="user")
+    item = aq.get(home, qid)
+    assert item["status"] == "pending"
+    assert "ticket_id" not in item
+    assert tickets_mod.list_tickets(home, status="issued") == []
+
+
+def test_dedup_falls_back_to_timestamps_when_cursor_unknown(home):
+    # Live incident 2026-09-25: the stored cursor was a synthetic UUID
+    # never present in observations, so every old inbound message was
+    # treated as new. The fallback compares against last_inbound_at.
+    a = _start(home)
+    now = time.time()
+    dm_state.set_last_seen(home, "x", "main", "c1", "uuid-poison",
+                           last_inbound_id="m_old",
+                           last_inbound_ts=now - 100)
+    res = a.report(_msgs(
+        ("c1", "m_old", "them", "old message", now - 200),
+        ("c1", "m_new", "them", "new message", now - 5)))
+    t = res["threads"][0]
+    assert len(t["replies_queued"]) == 1
+    item = aq.get(home, t["replies_queued"][0]["approval_id"])
+    assert item["payload"]["in_reply_to"] == "m_new"
 
 
 # ------------------------------------------------- cadence / pile-up ---

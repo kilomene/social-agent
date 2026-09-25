@@ -143,8 +143,15 @@ def approve(home, item_id, decided_by="user", apply_fn=None):
     # ticket issuable. The external agent claims it and fulfills it visibly
     # in its own browser (live browser card the user watches).
     from hands import tickets as _tickets  # lazy: avoids import cycles
-    ticket = _tickets.issue_from_approval(home, item, decided_by=decided_by,
-                                          decided_at=item["decided_at"])
+    try:
+        ticket = _tickets.issue_from_approval(home, item, decided_by=decided_by,
+                                              decided_at=item["decided_at"])
+    except Exception as e:
+        # Issuance failed (e.g. ToSRefusal for dm_send on a prohibited
+        # platform): close the journal entry as failed so a later retry
+        # re-runs cleanly instead of dangling as "started".
+        _rec.end(home, jb["id"], False, error=str(e))
+        raise
     item["ticket_id"] = ticket["id"]
     _save(home, items)
     _rec.end(home, jb["id"], True, result=f"approved by {decided_by}")

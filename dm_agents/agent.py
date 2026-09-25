@@ -242,7 +242,6 @@ class DMAgent:
         from hands import tickets as tickets_mod
         from approvals import queue as approvals_queue
         from ratelimit import controller as rl_mod
-        from platforms import tos as tos_mod
 
         # Fulfill the pending dm_check ticket with what was observed.
         ticket_fulfilled = None
@@ -296,7 +295,16 @@ class DMAgent:
                        if m["sender"] == "them"
                        and (not m["ts"] or now - m["ts"] < FIRST_RUN_LOOKBACK_S)]
             else:
-                new = [m for m in msgs if m["sender"] == "them"]
+                # Cursor not found among the observed ids (id scheme
+                # changed, or a synthetic cursor was stored): fall back to
+                # timestamps — only inbound newer than the last recorded
+                # inbound counts as new. A message with no timestamp counts
+                # only when we have never recorded inbound for this thread.
+                last_in_ts = tstate.get("last_inbound_at") or 0.0
+                new = [m for m in msgs
+                       if m["sender"] == "them"
+                       and ((m["ts"] or 0) > last_in_ts
+                            or (not m["ts"] and not last_in_ts))]
             inbound_new = [m for m in new if m["sender"] == "them"]
             # Duplicate guard: skip inbound already answered in-thread
             # (a "me" message at/after it) or already queued for approval.
@@ -333,14 +341,13 @@ class DMAgent:
                         retry_at=verdict.get("retry_at"))
                     tinfo["rate_limited"].append(item["id"])
                     continue
-                try:
-                    tos_mod.check_tos(self.platform, "automated_dms",
-                                      policy=self.policy or None,
-                                      home=self.home)
-                except Exception as e:  # ToSRefusal: surface, don't bypass
-                    tinfo["refused"].append(
-                        {"msg_id": m["msg_id"], "reason": f"ToS: {e}"})
-                    continue
+                # NOTE: no automated_dms ToS check on the DRAFT step. Drafting
+                # is proposing, not sending: the prohibition's basis
+                # (consent, opt-outs, bulk messaging) governs the SEND,
+                # which the pipeline refuses at ticket issuance
+                # (hands/tickets.issue_from_approval raises ToSRefusal for
+                # dm_send on prohibited platforms). The repo proposes; it
+                # never acts alone.
                 draft, info = replier_mod.draft_reply(
                     self.home, self.platform, self.account, m["text"])
                 item = approvals_queue.propose(

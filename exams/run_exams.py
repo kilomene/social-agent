@@ -1962,13 +1962,17 @@ def exam_70_dm_agent_report_ingest_and_cursor():
     ex.check("report ok, one thread processed",
              res["ok"] is True and th["thread_id"] == "conv-9"
              and th["observed"] == 3, str(th["observed"]))
-    ex.check("m1 already answered in-thread: no draft for it, only m3 considered",
-             th["new_inbound"] == 2 and th["replies_queued"] == []
-             and len(th["refused"]) == 1,
+    ex.check("m1 already answered in-thread: no draft for it, only m3 queued",
+             th["new_inbound"] == 2 and len(th["replies_queued"]) == 1
+             and th["refused"] == [],
              f"new_inbound={th['new_inbound']}")
-    ex.check("X automated_dms prohibited: refusal surfaces, nothing queued",
-             "automated_dms" in th["refused"][0]["reason"],
-             str(th["refused"][0]["reason"][:60]))
+    # Drafting is proposing (allowed). The automated_dms prohibition
+    # governs the SEND: approving must refuse at ticket issuance.
+    qid = th["replies_queued"][0]["approval_id"]
+    r = run(home, None, "approvals", "approve", "--id", qid)
+    ex.check("X automated_dms prohibited: the SEND is refused at ticket issuance",
+             r.returncode == 2 and "REFUSED (ToS)" in r.stderr,
+             r.stderr.strip()[:80])
     ex.check("dm_check ticket fulfilled with observed evidence",
              res["ticket_fulfilled"] == tid, str(res["ticket_fulfilled"]))
     r = run(home, None, "dm-agent", "status", "--platform", "x",

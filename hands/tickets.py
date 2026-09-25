@@ -173,6 +173,16 @@ def issue_from_approval(home, item, decided_by="user", decided_at=""):
     approval flow.
     """
     action = TYPE_TO_ACTION.get(item.get("type"), "like")
+    if action == "dm_send":
+        # The automated_dms prohibition governs SENDING. Drafts may be
+        # queued (proposing is allowed), but the pipeline must never
+        # issue a DM send on a platform where automated DMs are
+        # prohibited. Sends there happen only through the owner's own
+        # hands under explicit standing order — never via ticket.
+        # No policy is passed: prohibitions stay fail-closed here.
+        from platforms import tos as _tos_mod  # lazy: avoids import cycles
+        _tos_mod.check_tos(item.get("platform", ""), "automated_dms",
+                           home=home)
     receipts = {
         "tos": {
             "risk": item.get("risk", ""),
