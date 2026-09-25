@@ -855,9 +855,31 @@ def cmd_engage(args):
             record_follow(args.platform, args.target)
         save_json("actions.json", actions)
         if auto:
+            from hands import tickets as _tickets
+            _t = _tickets.issue(
+                home_dir(), args.op, args.platform, acct["username"],
+                target=args.target,
+                parameters={"target": args.target, "text": args.text or ""},
+                receipts={
+                    "tos": {"checked": "proposal time", "risk": "normal",
+                            "note": ("ToS-checked before approval; external agent "
+                                     "must follow the steps exactly and must not "
+                                     "improvise out-of-scope actions.")},
+                    "approval": {"approval_id": qitem["id"],
+                                 "decided_by": f"auto:{auto_via}",
+                                 "decided_at": utcnow()},
+                    "rate_limit": {"bucket": f"{args.platform}:{args.op}",
+                                   "checked": "proposal time",
+                                   "note": "rate-limit controller passed before approval"},
+                },
+                source={"action_id": aid, "approval_id": qitem["id"],
+                        "mission": mission},
+            )
             print(f"AUTO-APPROVED {aid} ({auto_via}): "
                   f"{args.op} -> {args.target} [{args.platform}/{acct['username']}]")
-            print("DRY-RUN: the external agent fulfills it via the ticket, then `ticket fulfill` + `engage done`.")
+            print(f"ticket {_t['id']}: the external agent claims it (`ticket claim`) "
+                  "and fulfills it visibly in its own browser, then "
+                  "`ticket fulfill` + `engage done`.")
         else:
             print(f"DRY-RUN proposal {aid}: {args.op} -> {args.target} "
                   f"[{args.platform}/{acct['username']}]")
