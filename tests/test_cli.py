@@ -247,3 +247,38 @@ def test_resolve_account_scoped_by_platform(home):
     r = cli("post", "draft", "--platform", "x", "--account", "nope",
             "--text", "hello", "--id", "px2", home=home)
     assert r.returncode == 1 and "unknown account" in r.stderr
+
+
+def test_engage_auto_approve_withholds_fixture_target(home):
+    # the engage auto-approve path mints its ticket directly, so it must
+    # run the same fixture-target guard the manual approval path runs
+    mdir = os.path.join(home, "missions")
+    os.makedirs(mdir, exist_ok=True)
+    add_account(home)
+    r = cli("mission", "create", "--name", "mfx", "--platforms", "tiktok",
+            "--topics", "ai video", "--actions", "like",
+            "--limit", "likes_per_day=5", home=home, missions=mdir)
+    assert r.returncode == 0, r.stderr
+    r = cli("autonomy", "grant", "--mission", "mfx", "--confirm",
+            home=home, missions=mdir)
+    assert r.returncode == 0 and "GRANTED" in r.stdout, r.stderr
+    pol = write_policy(os.path.join(home, "policy.yaml"),
+                       engagement={"min_seconds_between_likes": 0})
+    # synthetic target: auto-approval withheld, downgraded to a plain
+    # proposal, no ticket minted
+    r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
+            "--target", "f1", home=home, missions=mdir, policy=pol)
+    assert r.returncode == 0, r.stderr
+    assert "auto-approval withheld" in r.stdout and "refusing like ticket" in r.stdout
+    assert state(home, "actions.json")[0]["status"] == "proposed"
+    pend = state(home, "approvals/pending.json")
+    assert len(pend) == 1 and pend[0]["status"] == "pending"
+    tpath = os.path.join(home, "tickets.json")
+    assert not os.path.exists(tpath) or state(home, "tickets.json") == []
+    # real URL target: auto-approved and the ticket is minted
+    r = cli("engage", "like", "--platform", "tiktok", "--account", "main",
+            "--target", "https://example.com/v/ok1", home=home, missions=mdir,
+            policy=pol)
+    assert r.returncode == 0 and "AUTO-APPROVED" in r.stdout, r.stderr
+    tickets = state(home, "tickets.json")
+    assert len(tickets) == 1 and tickets[0]["target"] == "https://example.com/v/ok1"

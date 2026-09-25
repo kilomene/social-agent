@@ -837,6 +837,21 @@ def cmd_engage(args):
         else:
             status, auto, auto_via = "proposed", False, ""
 
+        # --- fixture-target guard on the auto path: it mints its ticket
+        # directly (below), bypassing approvals.queue.approve(), so it must
+        # run the same resolvability check issue_from_approval runs. A
+        # synthetic target downgrades the auto-approval to a plain
+        # proposal — a human approve would be refused the same way.
+        from hands import tickets as _tickets
+        if auto:
+            try:
+                _tickets.assert_target_resolvable(
+                    _tickets.TYPE_TO_ACTION.get(args.op, args.op),
+                    args.target or "")
+            except ValueError as e:
+                print(f"auto-approval withheld: {e}")
+                status, auto, auto_via = "proposed", False, ""
+
         aid = new_id("a")
         actions.append({
             "id": aid, "action": args.op, "platform": args.platform,
@@ -860,7 +875,6 @@ def cmd_engage(args):
             record_follow(args.platform, args.target)
         save_json("actions.json", actions)
         if auto:
-            from hands import tickets as _tickets
             _t = _tickets.issue(
                 home_dir(), args.op, args.platform, acct["username"],
                 target=args.target,

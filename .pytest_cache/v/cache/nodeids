@@ -29,6 +29,7 @@
   "tests/test_captions.py::test_x_char_limit",
   "tests/test_cli.py::test_accounts_crud",
   "tests/test_cli.py::test_doctor_passes",
+  "tests/test_cli.py::test_engage_auto_approve_withholds_fixture_target",
   "tests/test_cli.py::test_engage_comment_requires_text",
   "tests/test_cli.py::test_engage_dry_run_default_and_approval_gate",
   "tests/test_cli.py::test_post_flow",

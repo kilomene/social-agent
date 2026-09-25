@@ -169,6 +169,23 @@ def issue(home, action, platform, account, target="", parameters=None,
     return ticket
 
 
+def assert_target_resolvable(action, target):
+    """Fail-closed guard for ticket actions fulfilled in the live browser.
+
+    Targeted actions (like/comment/follow/...) are fulfilled by opening the
+    target in a live browser. Watcher fixtures emit synthetic event ids
+    (e.g. "f1") with no URL — issuing a ticket for one hands the external
+    agent an unfulfillable job. Raises ValueError unless the target is a
+    resolvable URL. ``action`` is the ticket-action name (post
+    TYPE_TO_ACTION mapping).
+    """
+    if action in _TARGET_REQUIRED_ACTIONS and "://" not in (target or ""):
+        raise ValueError(
+            f"refusing {action} ticket: target {target!r} is not a "
+            f"resolvable URL (fixture/synthetic event — nothing real "
+            f"to act on in the live browser)")
+
+
 def issue_from_approval(home, item, decided_by="user", decided_at=""):
     """Issue a ticket from an approved approval-queue item.
 
@@ -193,18 +210,11 @@ def issue_from_approval(home, item, decided_by="user", decided_at=""):
                            home=home)
     if action in _TARGET_REQUIRED_ACTIONS:
         # Targeted actions (like/comment/follow/...) are fulfilled by
-        # opening the target in a live browser. Watcher fixtures emit
-        # synthetic event ids (e.g. "f1") with no URL — issuing a ticket
-        # for one hands the external agent an unfulfillable job. Refuse
-        # at issuance so the approval surfaces the problem instead.
+        # opening the target in a live browser — see assert_target_resolvable.
         target = ((item.get("payload") or {}).get("target_url")
                   or (item.get("payload") or {}).get("target")
                   or (item.get("payload") or {}).get("url") or "")
-        if "://" not in target:
-            raise ValueError(
-                f"refusing {action} ticket: target {target!r} is not a "
-                f"resolvable URL (fixture/synthetic event — nothing real "
-                f"to act on in the live browser)")
+        assert_target_resolvable(action, target)
     receipts = {
         "tos": {
             "risk": item.get("risk", ""),

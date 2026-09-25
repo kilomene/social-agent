@@ -67,7 +67,7 @@ def test_autonomous_like_in_scope_auto_approves(home):
     make_mission(home)
     _mc(home, "autonomy", "grant", "--mission", "m1", "--confirm")
     r = _mc(home, "engage", "like", "--platform", "tiktok", "--account", "main",
-            "--target", "v1", "--author", "creator_x",
+            "--target", "https://example.com/v/v1", "--author", "creator_x",
             "--text", "sora ai video tutorial", "--likes-count", "500")
     assert r.returncode == 0, r.stderr
     assert "AUTO-APPROVED" in r.stdout
