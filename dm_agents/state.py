@@ -11,27 +11,129 @@ fields (active flag, stop reason, last cycle) for the platform+account.
 
 from core import memory as mem_mod
 
+import re
 import time
 
 AGENT_THREAD = "__agent__"
 
+# Older browser reads stored thread ids with a display suffix, e.g.
+# "1920160303695716352-2100845624027418624 (Zenas Ayansipe @dagreat00100)",
+# while current reads return the bare "1920160303695716352-2100845624027418624".
+# The suffix is display decoration, not identity: every state lookup and
+# write goes through canonical_thread_id() so both forms resolve to the one
+# canonical bare id.
+_THREAD_SUFFIX_RE = re.compile(r"^(.*)\s\(([^()]*)\)$")
 
-def _ensure_row(home, platform, account, thread_id):
-    mem_mod.init_db(home)
+
+def canonical_thread_id(thread_id):
+    """Strip a trailing " (display name)" suffix to the bare thread id.
+
+    Idempotent: a bare id is returned unchanged. The "__agent__"
+    pseudo-thread has no suffix and is unaffected.
+    """
+    tid = str(thread_id or "")
+    m = _THREAD_SUFFIX_RE.match(tid)
+    if m and m.group(1):
+        return m.group(1)
+    return tid
+
+
+def _ensure_canonical_row(home, platform, account, canonical):
     cx = mem_mod.connect(home)
     try:
         cx.execute(
             "INSERT OR IGNORE INTO dm_agent_state "
             "(platform, account_label, thread_id, updated_at) "
             "VALUES (?, ?, ?, ?)",
-            (platform, account, thread_id, mem_mod.utcnow()))
+            (platform, account, canonical, mem_mod.utcnow()))
         cx.commit()
     finally:
         cx.close()
 
 
+def _sweep_variants(home, platform, account):
+    """One-time merge of legacy suffixed thread ids into canonical rows.
+
+    Finds rows whose id carries a display suffix (e.g. "123 (Name
+    @handle)"), folds each into its canonical bare-id row — the freshest
+    row (max last_inbound_at, ties toward canonical) wins the cursor
+    fields — then deletes the variant rows. Returns True when anything
+    was merged. Cheap no-op once no variants remain.
+    """
+    cx = mem_mod.connect(home)
+    try:
+        tids = [r["thread_id"] for r in cx.execute(
+            "SELECT thread_id FROM dm_agent_state WHERE platform = ? "
+            "AND account_label = ? AND thread_id LIKE '% (%)'",
+            (platform, account)).fetchall()]
+    finally:
+        cx.close()
+    groups = {}
+    for t in tids:
+        c = canonical_thread_id(t)
+        if c != t:
+            groups.setdefault(c, []).append(t)
+    if not groups:
+        return False
+    changed = False
+    for canonical in sorted(groups):
+        variants = groups[canonical]
+        _ensure_canonical_row(home, platform, account, canonical)
+        cx = mem_mod.connect(home)
+        try:
+            rows = [dict(r) for r in cx.execute(
+                "SELECT * FROM dm_agent_state WHERE platform = ? "
+                "AND account_label = ? AND thread_id IN (%s)"
+                % ",".join("?" * (len(variants) + 1)),
+                (platform, account, canonical, *variants)).fetchall()]
+            # The just-inserted canonical placeholder carries defaults
+            # (last_inbound_at 0), so any real variant beats it; ties
+            # break toward the canonical bare id.
+            freshest = max(
+                rows,
+                key=lambda r: (float(r.get("last_inbound_at") or 0.0),
+                               r["thread_id"] == canonical))
+            cx.execute(
+                "UPDATE dm_agent_state SET last_seen_id = ?, "
+                "last_inbound_id = ?, last_inbound_at = ?, active = ?, "
+                "stop_reason = ?, last_cycle = ?, last_cycle_ts = ?, "
+                "pending_check = ?, idle_parked = ?, updated_at = ? "
+                "WHERE platform = ? AND account_label = ? AND thread_id = ?",
+                (freshest.get("last_seen_id") or "",
+                 freshest.get("last_inbound_id") or "",
+                 float(freshest.get("last_inbound_at") or 0.0),
+                 freshest.get("active", 1),
+                 freshest.get("stop_reason") or "",
+                 freshest.get("last_cycle") or "",
+                 float(freshest.get("last_cycle_ts") or 0.0),
+                 freshest.get("pending_check") or "",
+                 freshest.get("idle_parked", 0),
+                 mem_mod.utcnow(),
+                 platform, account, canonical))
+            for v in variants:
+                cx.execute(
+                    "DELETE FROM dm_agent_state WHERE platform = ? "
+                    "AND account_label = ? AND thread_id = ?",
+                    (platform, account, v))
+            cx.commit()
+            changed = True
+        finally:
+            cx.close()
+    if changed:
+        mem_mod._after_write(home)
+    return changed
+
+
+def _ensure_row(home, platform, account, thread_id):
+    tid = canonical_thread_id(thread_id)
+    mem_mod.init_db(home)
+    _ensure_canonical_row(home, platform, account, tid)
+    _sweep_variants(home, platform, account)
+
+
 def _update(home, platform, account, thread_id, **fields):
-    _ensure_row(home, platform, account, thread_id)
+    tid = canonical_thread_id(thread_id)
+    _ensure_row(home, platform, account, tid)
     fields["updated_at"] = mem_mod.utcnow()
     cols = ", ".join(f"{k} = ?" for k in fields)
     cx = mem_mod.connect(home)
@@ -39,7 +141,7 @@ def _update(home, platform, account, thread_id, **fields):
         cx.execute(
             f"UPDATE dm_agent_state SET {cols} "
             "WHERE platform = ? AND account_label = ? AND thread_id = ?",
-            (*fields.values(), platform, account, thread_id))
+            (*fields.values(), platform, account, tid))
         cx.commit()
     finally:
         cx.close()
@@ -47,22 +149,32 @@ def _update(home, platform, account, thread_id, **fields):
 
 
 def get_thread(home, platform, account, thread_id):
-    """Return the state row for one thread (dict), creating it if needed."""
-    _ensure_row(home, platform, account, thread_id)
+    """Return the state row for one thread (dict), creating it if needed.
+
+    The thread id is canonicalized first, so bare and suffixed forms of
+    the same conversation resolve to the one merged row.
+    """
+    tid = canonical_thread_id(thread_id)
+    _ensure_row(home, platform, account, tid)
     cx = mem_mod.connect(home)
     try:
         row = cx.execute(
             "SELECT * FROM dm_agent_state WHERE platform = ? "
             "AND account_label = ? AND thread_id = ?",
-            (platform, account, thread_id)).fetchone()
+            (platform, account, tid)).fetchone()
         return dict(row) if row else {}
     finally:
         cx.close()
 
 
 def list_threads(home, platform, account, include_agent_row=False):
-    """All tracked threads for a platform+account."""
+    """All tracked threads for a platform+account.
+
+    Legacy suffixed thread ids are merged into their canonical bare-id
+    rows first, so no conversation ever appears twice.
+    """
     mem_mod.init_db(home)
+    _sweep_variants(home, platform, account)
     cx = mem_mod.connect(home)
     try:
         rows = cx.execute(

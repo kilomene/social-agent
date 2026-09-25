@@ -1,7 +1,8 @@
 """DM agent subsystem tests.
 
 Covers: last_seen_id persistence across simulated restarts, per-thread
-tracking, duplicate guard, style gate, stop conditions, TikTok adapter
+tracking, thread-id normalization (bare vs suffixed display ids resolve to
+one merged row), duplicate guard, style gate, stop conditions, TikTok adapter
 refusal, dm_check/dm_send ticket issuance with receipts, poll-interval
 floor, trigger queue-jumping with the pile-up guard, and the credential
 tripwire (no secrets in dm_agents code, state, or tickets).
@@ -348,6 +349,138 @@ def test_dedup_falls_back_to_timestamps_when_cursor_unknown(home):
     assert len(t["replies_queued"]) == 1
     item = aq.get(home, t["replies_queued"][0]["approval_id"])
     assert item["payload"]["in_reply_to"] == "m_new"
+
+
+# -------------------------------------- thread-id normalization ---
+
+def _seed_legacy_row(home, platform, account, thread_id, last_seen_id="",
+                     last_inbound_id="", last_inbound_at=0.0):
+    """Insert a raw dm_agent_state row, bypassing normalization — simulates
+    state written before canonicalization (suffixed display ids)."""
+    from core import memory as mem_mod
+    mem_mod.init_db(home)
+    cx = mem_mod.connect(home)
+    try:
+        cx.execute(
+            "INSERT OR REPLACE INTO dm_agent_state "
+            "(platform, account_label, thread_id, last_seen_id, "
+            "last_inbound_id, last_inbound_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (platform, account, thread_id, last_seen_id, last_inbound_id,
+             float(last_inbound_at), mem_mod.utcnow()))
+        cx.commit()
+    finally:
+        cx.close()
+
+
+def test_canonical_thread_id_strips_display_suffix():
+    bare = "1920160303695716352-2100845624027418624"
+    assert dm_state.canonical_thread_id(bare) == bare
+    assert dm_state.canonical_thread_id(
+        bare + " (Zenas Ayansipe @dagreat00100)") == bare
+    assert dm_state.canonical_thread_id("__agent__") == "__agent__"
+    # idempotent: canonicalizing twice is stable
+    once = dm_state.canonical_thread_id(
+        bare + " (Zenas Instinct @Instinct_zen)")
+    assert dm_state.canonical_thread_id(once) == once == bare
+
+
+def test_bare_and_suffixed_ids_resolve_to_one_row(home):
+    suffixed = ("1920160303695716352-2100845624027418624 "
+                "(Zenas Ayansipe @dagreat00100)")
+    dm_state.set_last_seen(home, "x", "main", suffixed, "m1",
+                           last_inbound_id="m1", last_inbound_ts=100.0)
+    # the bare form (what browser reads return now) sees the same row
+    assert dm_state.get_last_seen(
+        home, "x", "main", "1920160303695716352-2100845624027418624") == "m1"
+    rows = dm_state.list_threads(home, "x", "main")
+    assert [r["thread_id"] for r in rows] == \
+        ["1920160303695716352-2100845624027418624"]
+
+
+def test_merge_keeps_latest_cursor_and_max_inbound(home):
+    bare = "2100622701643657216-2100845624027418624"
+    suffixed = bare + " (Zenas Instinct @Instinct_zen)"
+    # legacy suffixed row holds the older cursor; a bare row exists with
+    # the newer cursor — the merge keeps the newest, deletes the variant
+    _seed_legacy_row(home, "x", "main", suffixed, last_seen_id="m_old",
+                     last_inbound_id="m_old", last_inbound_at=100.0)
+    _seed_legacy_row(home, "x", "main", bare, last_seen_id="m_new",
+                     last_inbound_id="m_new", last_inbound_at=200.0)
+    row = dm_state.get_thread(home, "x", "main", bare)
+    assert row["last_seen_id"] == "m_new"
+    assert row["last_inbound_id"] == "m_new"
+    assert row["last_inbound_at"] == 200.0
+    rows = dm_state.list_threads(home, "x", "main")
+    assert [r["thread_id"] for r in rows] == [bare]
+    # second sweep is a no-op: nothing left to merge
+    assert dm_state.list_threads(home, "x", "main") == rows
+
+
+def test_merge_adopts_freshest_variant_cursor(home):
+    bare = "1920160303695716352-2100845624027418624"
+    suffixed = bare + " (Zenas Ayansipe @dagreat00100)"
+    # only the legacy suffixed row exists: the bare lookup must adopt its
+    # cursor, not start blank (a blank cursor is what caused the spurious
+    # first-sight drafts in the 2026-09-25 live incident)
+    _seed_legacy_row(home, "x", "main", suffixed, last_seen_id="m9",
+                     last_inbound_id="m9", last_inbound_at=300.0)
+    assert dm_state.get_last_seen(home, "x", "main", bare) == "m9"
+    row = dm_state.get_thread(home, "x", "main", bare)
+    assert row["last_inbound_at"] == 300.0
+    assert [r["thread_id"] for r in
+            dm_state.list_threads(home, "x", "main")] == [bare]
+
+
+def test_mixed_format_report_no_duplicates_no_spurious_drafts(home,
+                                                             monkeypatch):
+    # Live incident 2026-09-25: legacy state keyed by suffixed ids, browser
+    # reads return bare ids. report() must resolve to the one merged row
+    # and NOT treat already-seen messages as new.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home)
+    now = time.time()
+    bare = "1920160303695716352-2100845624027418624"
+    suffixed = bare + " (Zenas Ayansipe @dagreat00100)"
+    # legacy state: everything through m2 already seen
+    _seed_legacy_row(home, "x", "main", suffixed, last_seen_id="m2",
+                     last_inbound_id="m2", last_inbound_at=now - 50)
+    # browser read returns the BARE id with the same already-seen messages
+    res = a.report(_msgs(
+        (bare, "m1", "them", "hello", now - 100),
+        (bare, "m2", "them", "are you there", now - 50)))
+    t = res["threads"][0]
+    assert t["thread_id"] == bare
+    assert t["new_inbound"] == 0
+    assert t["replies_queued"] == []
+    assert t["rate_limited"] == []
+    # one row, canonical id, cursor intact — no duplicate bare-id row
+    rows = dm_state.list_threads(home, "x", "main")
+    assert [r["thread_id"] for r in rows] == [bare]
+    assert dm_state.get_last_seen(home, "x", "main", bare) == "m2"
+
+
+def test_new_inbound_after_merge_still_queues(home, monkeypatch):
+    # The merge must not swallow genuinely new messages: m1 seen under the
+    # legacy suffixed id, m2 arrives on the bare id -> exactly one draft.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home)
+    now = time.time()
+    bare = "2100622701643657216-2100845624027418624"
+    suffixed = bare + " (Zenas Instinct @Instinct_zen)"
+    _seed_legacy_row(home, "x", "main", suffixed, last_seen_id="m1",
+                     last_inbound_id="m1", last_inbound_at=now - 100)
+    res = a.report(_msgs(
+        (bare, "m1", "them", "old one", now - 100),
+        (bare, "m2", "them", "new question here", now - 5)))
+    t = res["threads"][0]
+    assert t["new_inbound"] == 1
+    assert len(t["replies_queued"]) == 1
+    assert dm_state.get_last_seen(home, "x", "main", bare) == "m2"
+    assert [r["thread_id"] for r in
+            dm_state.list_threads(home, "x", "main")] == [bare]
 
 
 # ------------------------------------------------- cadence / pile-up ---
