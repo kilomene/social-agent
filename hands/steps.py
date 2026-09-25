@@ -19,6 +19,7 @@ PLATFORM_HOME = {
     "youtube": "https://www.youtube.com/",
     "reddit": "https://www.reddit.com/",
     "linkedin": "https://www.linkedin.com/",
+    "threads": "https://www.threads.com/",
 }
 
 LOGIN_WALL_STEP = (

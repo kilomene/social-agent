@@ -1,0 +1,58 @@
+# Machine-readable ToS rules for Threads.
+# Plain-language summaries only; the official documents govern (see terms.md).
+# Last checked: 2026-09-25. These documents change over time; re-check periodically.
+platform: threads
+display_name: Threads
+last_checked: 2026-09-25
+actions:
+  automated_likes:
+    status: restricted
+    basis: "Threads' Terms of Use (Meta) prohibit accessing the service in automated ways without express permission. Genuine, human-directed, low-volume likes are authentic; bulk or scripted liking is not."
+    sources:
+      - https://help.instagram.com/769983657850450
+  automated_comments:
+    status: restricted
+    basis: "Automated access without express permission is prohibited, and inauthentic or misleading behavior is banned. Human-reviewed, genuine replies are authentic; automated mass replying is not."
+    sources:
+      - https://help.instagram.com/769983657850450
+  automated_follows:
+    status: restricted
+    basis: "Automated access without express permission is prohibited. Genuine follows are fine; automated follow/unfollow churn is not."
+    sources:
+      - https://help.instagram.com/769983657850450
+  automated_reshares:
+    status: restricted
+    basis: "Automated access without express permission is prohibited, and inauthentic engagement is banned. Genuine, human-directed reposts and quotes are authentic; automated mass reposting is not."
+    sources:
+      - https://help.instagram.com/769983657850450
+  automated_dms:
+    status: restricted
+    basis: "Misleading, fraudulent, or unlawful use is prohibited. No unsolicited automated outreach; keep any messaging human-directed and low-volume."
+    sources:
+      - https://help.instagram.com/769983657850450
+  automated_posting:
+    status: restricted
+    basis: "Automated access without express permission is prohibited. This tool only drafts posts and records explicit human approval; it never publishes by itself."
+    sources:
+      - https://help.instagram.com/769983657850450
+  automated_data_collection:
+    status: restricted
+    basis: "Threads' Terms of Use (Meta) prohibit automated access and collection of information without express permission, even while logged in. Meta's sanctioned automation path is its official developer interface; browser-based collection is not affirmatively permitted. Keep it low-volume, own-account, read-only, and minimal."
+    sources:
+      - https://help.instagram.com/769983657850450
+      - https://developers.facebook.com/docs/threads
+  profile_modification:
+    status: restricted
+    basis: "Account changes must be human-directed. This tool only proposes profile changes; they require explicit human approval and are applied by the user."
+    sources:
+      - https://help.instagram.com/769983657850450
+  automated_reading:
+    status: restricted
+    basis: "Keep automated reading low-volume and limited to the user's own account. Bulk collection without permission is prohibited."
+    sources:
+      - https://help.instagram.com/769983657850450
+  comment_moderation:
+    status: allowed
+    basis: "Creators may moderate replies on their own threads (hide, delete, report). This tool only moderates the user's OWN threads, proposes hides, and requires explicit approval or a pre-approved policy rule before anything is hidden; it never touches anyone else's content."
+    sources:
+      - https://help.instagram.com/769983657850450

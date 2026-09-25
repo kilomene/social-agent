@@ -18,4 +18,4 @@ ingests) is a list of threads:
                   "text": "...", "ts": 1234567890.0}, ...]}, ...]
 """
 
-SUPPORTED = ("x", "tiktok", "instagram", "facebook")
+SUPPORTED = ("x", "tiktok", "instagram", "facebook", "threads")

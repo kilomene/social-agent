@@ -24,6 +24,7 @@ PLATFORMS = {
     "tiktok": "dm_agents.platforms.tiktok",
     "instagram": "dm_agents.platforms.instagram",
     "facebook": "dm_agents.platforms.facebook",
+    "threads": "dm_agents.platforms.threads",
 }
 
 SUPPORTED = tuple(PLATFORMS)

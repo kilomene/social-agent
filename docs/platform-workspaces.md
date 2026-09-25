@@ -1,9 +1,9 @@
 # Platform workspaces
 
 Every social platform gets its own source tree: `platforms/<platform>/`.
-The design is generic — ANY platform (not just the seven we ship)
+The design is generic — ANY platform (not just the eight we ship)
 gets one via `social-agent workspace init --platform <name>`
-(linkedin was added this way as the 7th platform).
+(linkedin was added this way as the 7th platform, threads as the 8th).
 
 ## The tree
 

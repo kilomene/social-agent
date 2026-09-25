@@ -258,7 +258,7 @@ def test_tiktok_adapter_refuses_with_documented_reason():
 
 
 def test_registry_lists_four_platforms():
-    assert set(SUPPORTED) == {"x", "tiktok", "instagram", "facebook"}
+    assert set(SUPPORTED) == {"x", "tiktok", "instagram", "facebook", "threads"}
     for p in SUPPORTED:
         mod = get_adapter(p)
         assert mod.PLATFORM == p

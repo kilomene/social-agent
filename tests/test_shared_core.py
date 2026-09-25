@@ -209,9 +209,15 @@ def test_every_platform_registers_its_watchers():
     # DMs are owned EXCLUSIVELY by dm_agents/ (2026-09-25): the DM
     # platforms must NOT register the 'message' watcher, so a watcher and
     # a DM agent can never double-handle the same conversation.
-    DM_PLATFORMS = {"tiktok", "x", "instagram", "facebook"}
+    DM_PLATFORMS = {"tiktok", "x", "instagram", "facebook", "threads"}
+    # Threads ships a curated watcher subset (no competitor/sentiment/
+    # velocity/content-idea yet); everything else registers the full set.
+    CURATED_MANIFESTS = {
+        "threads": {"notification", "comment", "feed", "follow", "activity",
+                    "trend", "mention", "crisis", "security"},
+    }
     for platform in ("tiktok", "x", "instagram", "facebook", "youtube",
-                     "reddit", "linkedin"):
+                     "reddit", "linkedin", "threads"):
         pkg = __import__(f"platforms.{platform}.watchers",
                          fromlist=["WATCHERS"])
         declared = {s[0] if isinstance(s, (tuple, list)) else s
@@ -219,7 +225,7 @@ def test_every_platform_registers_its_watchers():
         excluded = set() if platform == "youtube" else {"channel"}
         if platform in DM_PLATFORMS:
             excluded |= {"message"}
-        expected = set(REGISTRY) - excluded
+        expected = CURATED_MANIFESTS.get(platform, set(REGISTRY) - excluded)
         assert declared == expected, \
             f"{platform}: manifest declares {sorted(declared)}, " \
             f"expected {sorted(expected)}"
@@ -250,7 +256,7 @@ def test_shared_core_manifest_documents_new_layout():
 
 def test_platforms_exist_for_shipped_platforms():
     for platform in ("tiktok", "x", "instagram", "facebook",
-                     "youtube", "reddit", "linkedin"):
+                     "youtube", "reddit", "linkedin", "threads"):
         pdir = os.path.join(PLATFORMS, platform)
         assert os.path.isdir(pdir), f"missing platform tree for {platform}"
         for sub in ("workspace", "watchers", "memory"):

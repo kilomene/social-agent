@@ -7,19 +7,19 @@ the user's own logged-in session, fulfilling approved execution tickets
 keys, no OAuth apps — this repo contains zero platform-API integrations by
 the account owner's explicit order.
 
-| Capability | TikTok | X | Instagram | Facebook | YouTube | Reddit | LinkedIn |
-|---|---|---|---|---|---|---|---|
-| Read feed / timeline | browser | browser | browser | browser | browser | browser | browser |
-| Read profile + follower counts | browser | browser | browser | browser | browser | browser | browser |
-| Read comments | browser | browser | browser | browser | browser | browser | browser |
-| Read notifications | browser | browser | browser | browser | browser | browser | browser |
-| Read DMs | browser | browser | browser | browser | n/a | browser | browser |
-| Post content | browser | browser | browser | browser | browser | browser | browser (drafts only, human posts) |
-| Like | browser | browser | browser | browser | browser | upvote: refused (vote manipulation) | react: refused (ToS) |
-| Comment / reply | browser | browser | browser | browser | browser | browser | refused (ToS) |
-| Follow / subscribe | browser | browser | browser | browser | browser | browser | follow/connect: refused (ToS) |
-| Repost / retweet / share | browser (share) | browser | share to story via browser | browser (share) | n/a | crosspost via browser | refused (ToS) |
-| DM send | browser (throttled) | browser | browser | browser | n/a | browser | refused (spam) |
+| Capability | TikTok | X | Instagram | Facebook | YouTube | Reddit | LinkedIn | Threads |
+|---|---|---|---|---|---|---|---|---|
+| Read feed / timeline | browser | browser | browser | browser | browser | browser | browser | browser |
+| Read profile + follower counts | browser | browser | browser | browser | browser | browser | browser | browser |
+| Read comments | browser | browser | browser | browser | browser | browser | browser | browser |
+| Read notifications | browser | browser | browser | browser | browser | browser | browser | browser |
+| Read DMs | browser | browser | browser | browser | n/a | browser | browser | browser |
+| Post content | browser | browser | browser | browser | browser | browser | browser (drafts only, human posts) | browser |
+| Like | browser | browser | browser | browser | browser | upvote: refused (vote manipulation) | react: refused (ToS) | browser |
+| Comment / reply | browser | browser | browser | browser | browser | browser | refused (ToS) | browser |
+| Follow / subscribe | browser | browser | browser | browser | browser | browser | follow/connect: refused (ToS) | browser |
+| Repost / retweet / share | browser (share) | browser | share to story via browser | browser (share) | n/a | crosspost via browser | refused (ToS) | browser (repost/quote) |
+| DM send | browser (throttled) | browser | browser | browser | n/a | browser | refused (spam) | browser (throttled) |
 
 ## Auth notes
 
@@ -70,7 +70,7 @@ Key platform-specific outcomes (see each `terms.md` for sources):
 - **YouTube:** automated outreach is spam (no creator DM feature) —
   **prohibited**; fake engagement of any kind is banned.
 - **LinkedIn:** scraping/crawling and unauthorized automation are prohibited by the User Agreement — automated likes, comments, follows/connects, reshares, DMs, and browser-based data collection are **prohibited** (fail closed; `tos.acknowledged_risk: [linkedin]` opt-in only). Posting is drafts-for-human-approval; comment moderation on own posts is allowed.
-- **TikTok / Instagram / Facebook:** automation without the platform's
+- **TikTok / Instagram / Facebook / Threads:** automation without the platform's
   permission is prohibited in the literal terms; this tool's posture is
   human-directed, low-volume, own-account operation with the constraint shown
   on every guarded call. Bulk/spammy automation stays refused by the tool's

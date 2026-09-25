@@ -323,7 +323,7 @@ platforms/<name>/       per-platform tree — registration + views ONLY, never s
   watchers/             REGISTRATION manifest (which watchers + defaults)
   memory/               namespaced VIEW into the shared DB (no .db copy)
   workspace/            shipped workspace template (workspace.yaml + state/)
-                        shipped: tiktok, x, instagram, facebook, youtube, reddit, linkedin
+                        shipped: tiktok, x, instagram, facebook, youtube, reddit, linkedin, threads
 approvals/              unified human approval queue (pending/approved/rejected/held/rate_limited)
 people/                 people memory: interaction scores, notes, tags, top fans
 ratelimit/              central per-(platform,action) sliding-window controller

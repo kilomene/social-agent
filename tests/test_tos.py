@@ -14,7 +14,8 @@ from conftest import cli, add_account  # noqa: E402
 
 
 def test_all_platforms_have_valid_rules():
-    for p in ["tiktok", "x", "instagram", "facebook", "youtube", "reddit"]:
+    for p in ["tiktok", "x", "instagram", "facebook", "youtube", "reddit",
+              "threads"]:
         rules = tos.load_rules(p)
         assert rules["platform"] == p
         assert rules["last_checked"], f"{p} missing last_checked"

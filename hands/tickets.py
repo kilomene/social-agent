@@ -58,7 +58,7 @@ TICKET_SCHEMA = {
     "action": "like | comment | follow | unfollow | post_text | "
               "post_video | post_photo | dm_send | dm_check | hide_comment | "
               "reshare | subscribe | profile_update",
-    "platform": "tiktok | x | instagram | facebook | youtube | reddit | linkedin",
+    "platform": "tiktok | x | instagram | facebook | youtube | reddit | linkedin | threads",
     "account": "account label the action is for",
     "target": "target URL (post/profile/conversation)",
     "parameters": "action parameters (text, file, ...) — never credentials",
