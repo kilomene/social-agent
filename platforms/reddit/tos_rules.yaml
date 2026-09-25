@@ -53,3 +53,8 @@ actions:
     sources:
       - https://redditinc.com/policies/user-agreement-july-1-2026
       - https://redditinc.com/policies/data-api-terms
+  comment_moderation:
+    status: allowed
+    basis: "Creators may moderate comments on their own posts (hide, delete, report). This tool only moderates the user's OWN comment sections, proposes hides, and requires explicit approval or a pre-approved policy rule before anything is hidden; it never touches anyone else's content."
+    sources:
+      - https://redditinc.com/policies/user-agreement-july-1-2026

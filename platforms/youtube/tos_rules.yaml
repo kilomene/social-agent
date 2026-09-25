@@ -54,3 +54,8 @@ actions:
     basis: "Keep automated reading low-volume and limited to the user's own account. Bulk collection via automated means is prohibited; the API is the sanctioned path."
     sources:
       - https://www.youtube.com/t/terms?gl=DE
+  comment_moderation:
+    status: allowed
+    basis: "Creators may moderate comments on their own posts (hide, delete, report). This tool only moderates the user's OWN comment sections, proposes hides, and requires explicit approval or a pre-approved policy rule before anything is hidden; it never touches anyone else's content."
+    sources:
+      - https://www.youtube.com/t/terms?gl=DE

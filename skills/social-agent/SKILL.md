@@ -107,13 +107,32 @@ organic-only and sits under the ToS layer (§13).
 
 ## Watcher types (15)
 
-`notification` `comment` `feed` `follow` `activity` `channel` `message`
+`notification` `comment` (add `moderate: true` to auto-classify new comments:
+toxic/spam → high-severity events, auto-hide-rule matches → hide proposals)
+`feed` `follow` `activity` `channel` `message`
 `trend` (trending topics filtered by interests) `competitor` (rival cadence +
 deltas digest) `sentiment` (sentiment-shift alerts) `mention` (unified
 @mentions) `velocity` (viral-velocity early alerts) `content-idea` (repeated
 audience questions → video ideas) `crisis` (negative-spike urgent alerts)
 `security` (follower purges, mass unfollows, unknown sessions — urgent alerts)
 — see `watchers/` for each config schema.
+
+## Moderation + content production
+
+- `moderate scan/hide/approve/done/list` — comment moderation on **your own**
+  posts only: lexicon classifiers (ok/question/praise/spam/toxic),
+  approval-gated hides, pre-approved `moderation.auto_hide` rules in
+  policy.yaml. Guardrails §17.
+- `caption generate/variants` — platform-optimized captions (hook + body +
+  CTA + hashtag norms), run through the voice + identity gates. Guardrails §18.
+- `video info/clip/trim/concat/to-vertical/to-horizontal/frame/compress/plan`
+  — local editing via **ffmpeg** (the only external dependency; see
+  `video/SETUP.md`). Prints exact commands (`--dry-run`), never overwrites
+  inputs. Guardrails §18.
+- `audio clip/loop/mix/extract/normalize` — same ffmpeg contract; mixes duck
+  the music bed under voiceover via sidechain compression; loudness presets
+  per platform. Music must come from licensed libraries or your own audio
+  (`audio/MUSIC.md`). Guardrails §18.
 
 ## Environment overrides (for tests)
 

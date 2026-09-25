@@ -43,6 +43,11 @@ from security import secrets as secrets_mod
 from security import audit as security_audit_mod
 from learning import study as study_mod
 from identity import check as identity_mod
+from moderation import classify as mod_classify
+from captions import generate as captions_mod
+from video import ffmpeg as vff
+from video import plans as vplans
+from audio import clips as audio_mod
 
 VERSION = "0.1.0"
 
@@ -1193,6 +1198,242 @@ def cmd_identity(args):
             print(f"note: {a}")
 
 
+# -------------------------------------------------------------- moderate ---
+
+def _moderation_log():
+    return load_json("moderation.json", [])
+
+
+def cmd_moderate(args):
+    if args.op == "scan":
+        check_platform(args.platform)
+        resolve_account(args.account)
+        tos_mod.check_tos(args.platform, "automated_data_collection")
+        if not args.fixture:
+            raise UsageError("moderate scan needs --fixture (JSON list of comments)")
+        with open(args.fixture, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            data = data.get("items", [])
+        for it in data:
+            cls = mod_classify.classify_comment(str(it.get("text", "")))
+            print(f"{it.get('id')} [{cls['label']}] @{it.get('author')}: "
+                  f"{str(it.get('text', ''))[:90]}")
+            print(f"    score {cls['score']}: {'; '.join(cls['reasons'][:3])}")
+    elif args.op == "hide":
+        check_platform(args.platform)
+        acct = resolve_account(args.account)
+        guard_acting(args.platform, "hide")
+        text = args.text or ""
+        cls = mod_classify.classify_comment(text)
+        rules = get_policy().get("moderation", {}).get("auto_hide", [])
+        rule = mod_classify.check_auto_hide(text, rules)
+        log = _moderation_log()
+        mid = new_id("m")
+        rec = {
+            "id": mid, "action": "hide", "platform": args.platform,
+            "account": acct["username"], "post": args.post,
+            "comment": args.comment, "text": text[:200],
+            "classification": cls["label"], "reason": args.reason or "",
+            "dry_run": True, "created": utcnow(),
+        }
+        if rule:
+            rec.update({"status": "approved", "auto_approved": True,
+                        "auto_hide_rule": rule,
+                        "approved_at": utcnow(), "approved_at_ts": time.time()})
+            print(f"hide {mid} AUTO-APPROVED under pre-approved rule "
+                  f"{rule['label']!r} ({rule['reason']})")
+        else:
+            rec.update({"status": "proposed", "auto_approved": False})
+            print(f"DRY-RUN proposal {mid}: hide comment {args.comment} "
+                  f"[{args.platform}/{acct['username']}] ({cls['label']})")
+            print("Nothing was hidden. Run `moderate approve` to approve it explicitly.")
+        record_action(args.platform)
+        log.append(rec)
+        save_json("moderation.json", log)
+    elif args.op == "list":
+        log = _moderation_log()
+        if args.status:
+            log = [m for m in log if m["status"] == args.status]
+        if not log:
+            print("no hide proposals")
+            return
+        for m in log:
+            print(f"{m['id']} [{m['status']}] hide {m['comment']} "
+                  f"({m['classification']}) [{m['platform']}/{m['account']}]")
+    elif args.op == "approve":
+        log = _moderation_log()
+        m = next((x for x in log if x["id"] == args.id), None)
+        if not m:
+            raise UsageError(f"unknown proposal {args.id!r}")
+        if m["status"] != "proposed":
+            raise UsageError(f"proposal {args.id} is {m['status']}, not proposed")
+        guard_acting(m["platform"], "hide")
+        m["status"] = "approved"
+        m["approved_at"] = utcnow()
+        m["approved_at_ts"] = time.time()
+        save_json("moderation.json", log)
+        print(f"hide {args.id} APPROVED for {m['platform']}/{m['account']}")
+        print("Hide the comment in a real browser session, then `moderate done`.")
+    elif args.op == "done":
+        log = _moderation_log()
+        m = next((x for x in log if x["id"] == args.id), None)
+        if not m:
+            raise UsageError(f"unknown proposal {args.id!r}")
+        if m["status"] != "approved":
+            raise UsageError(f"proposal {args.id} is {m['status']}; approve it first")
+        if not approval_valid(m):
+            m["status"] = "expired"
+            save_json("moderation.json", log)
+            raise Refused("approval expired; re-approve")
+        m["status"] = "done"
+        m["done_at"] = utcnow()
+        save_json("moderation.json", log)
+        print(f"hide {args.id} logged as done")
+
+
+# --------------------------------------------------------------- caption ---
+
+def cmd_caption(args):
+    check_platform(args.platform)
+    label = ""
+    if args.account:
+        acct = resolve_account(args.account)
+        label = acct.get("label") or acct["username"]
+    extra = _csv_list(args.hashtags)
+    if args.op == "generate":
+        cap = captions_mod.generate(args.platform, args.topic, args.tone,
+                                    extra_hashtags=extra)
+        _warn(content_gates(args.platform, label, cap["caption"], "caption"))
+        print(cap["caption"])
+        print(f"\n[{cap['char_count']} chars | {len(cap['hashtags'])} hashtags | "
+              f"tone={cap['tone']}]")
+    elif args.op == "variants":
+        for i, cap in enumerate(captions_mod.variants(args.platform, args.topic,
+                                                      args.tone, n=args.n,
+                                                      extra_hashtags=extra), 1):
+            _warn(content_gates(args.platform, label, cap["caption"],
+                                f"caption_variant_{i}"))
+            print(f"--- variant {i} ---")
+            print(cap["caption"])
+            print()
+
+
+# ----------------------------------------------------------------- video ---
+
+def _require_ffmpeg():
+    path = vff.which_ffmpeg()
+    if not path:
+        raise UsageError("ffmpeg not found — see video/SETUP.md for install steps")
+    return path
+
+
+def cmd_video(args):
+    dry = bool(getattr(args, "dry_run", False))
+    if args.op == "info":
+        inf = vff.info(args.input)
+        print(f"duration : {inf.get('duration', 0):.2f}s")
+        print(f"size     : {inf.get('width')}x{inf.get('height')} "
+              f"@{inf.get('fps')}fps [{inf.get('vcodec')}]")
+        print(f"audio    : {inf.get('acodec', 'none')}")
+    elif args.op == "clip":
+        _require_ffmpeg()
+        vff.run_cmd(vff.build_clip(args.input, args.output, args.start,
+                                   args.duration, strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"clipped -> {args.output}")
+    elif args.op == "trim":
+        _require_ffmpeg()
+        vff.run_cmd(vff.build_trim(args.input, args.output, args.start, args.end,
+                        strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"trimmed -> {args.output}")
+    elif args.op == "concat":
+        _require_ffmpeg()
+        inputs = [p.strip() for p in (args.inputs or "").split(",") if p.strip()]
+        vff.run_cmd(vff.build_concat(inputs, args.output, strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"concatenated {len(inputs)} files -> {args.output}")
+    elif args.op == "to-vertical":
+        _require_ffmpeg()
+        vff.run_cmd(vff.build_to_vertical(args.input, args.output, strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"vertical 9:16 -> {args.output}")
+    elif args.op == "to-horizontal":
+        _require_ffmpeg()
+        vff.run_cmd(vff.build_to_horizontal(args.input, args.output, strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"horizontal 16:9 -> {args.output}")
+    elif args.op == "frame":
+        _require_ffmpeg()
+        vff.run_cmd(vff.build_frame(args.input, args.output, at=args.at,
+                        strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"frame @ {args.at}s -> {args.output}")
+    elif args.op == "compress":
+        _require_ffmpeg()
+        vff.run_cmd(vff.build_compress(args.input, args.output, args.preset,
+                        strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"compressed [{args.preset}] -> {args.output}")
+    elif args.op == "plan":
+        if args.pop == "create":
+            steps = json.loads(args.steps)
+            plan = vplans.create(home_dir(), args.name, steps,
+                                 description=args.description or "")
+            print(f"plan {args.name!r} created with {len(plan['steps'])} step(s)")
+        elif args.pop == "list":
+            names = vplans.list_plans(home_dir())
+            print("no plans" if not names else "\n".join(names))
+        elif args.pop == "show":
+            plan = vplans.load(home_dir(), args.name)
+            print(json.dumps(plan, indent=2))
+        elif args.pop == "run":
+            _require_ffmpeg()
+            vplans.run(home_dir(), args.name, args.input, args.output,
+                       dry_run=dry)
+            if not dry:
+                print(f"plan {args.name!r} executed -> {args.output}")
+
+
+# ----------------------------------------------------------------- audio ---
+
+def cmd_audio(args):
+    dry = bool(getattr(args, "dry_run", False))
+    if args.op == "clip":
+        _require_ffmpeg()
+        audio_mod.run_cmd(audio_mod.build_clip(args.input, args.output, args.start,
+                                               args.duration, args.fade_in,
+                                               args.fade_out, strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"audio clipped -> {args.output}")
+    elif args.op == "loop":
+        _require_ffmpeg()
+        audio_mod.run_cmd(audio_mod.build_loop(args.input, args.output,
+                                               args.duration, strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"audio looped to {args.duration}s -> {args.output}")
+    elif args.op == "mix":
+        _require_ffmpeg()
+        audio_mod.run_cmd(audio_mod.build_mix(args.voiceover, args.bed,
+                                              args.output, args.duck_db,
+                                              strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"mixed (bed ducked {args.duck_db}dB) -> {args.output}")
+    elif args.op == "extract":
+        _require_ffmpeg()
+        audio_mod.run_cmd(audio_mod.build_extract(args.video, args.output,
+                                              strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"audio extracted -> {args.output}")
+    elif args.op == "normalize":
+        _require_ffmpeg()
+        audio_mod.run_cmd(audio_mod.build_normalize(args.input, args.output,
+                                                    args.preset, strict=not dry), dry_run=dry)
+        if not dry:
+            print(f"normalized [{args.preset}] -> {args.output}")
+
+
 def cmd_doctor(args):
     checks = []
 
@@ -1245,6 +1486,20 @@ def cmd_doctor(args):
               f"enabled={hcfg.enabled} base_url={'set' if hcfg.base_url else 'log-only'}")
     except Exception as e:
         check("heartbeat config", False, str(e))
+    ff = vff.which_ffmpeg()
+    check("ffmpeg (video/audio editing)", bool(ff), ff or "not found — see video/SETUP.md")
+    check("ffprobe (video info)", bool(vff.ffprobe()),
+          vff.ffprobe() or "not found — see video/SETUP.md")
+    for modname, desc in (("moderation.classify", "comment moderation"),
+                          ("captions.generate", "caption generator"),
+                          ("video.ffmpeg", "video command builders"),
+                          ("video.plans", "video edit plans"),
+                          ("audio.clips", "audio clipping/mixing")):
+        try:
+            __import__(modname)
+            check(f"module: {desc}", True)
+        except Exception as e:
+            check(f"module: {desc}", False, str(e))
 
     failed = 0
     for name, ok, detail in checks:
@@ -1515,6 +1770,155 @@ def build_parser():
     p.add_argument("--text", required=True)
     p.add_argument("--account", required=True)
     ident.set_defaults(func=cmd_identity)
+
+    mo = sub.add_parser("moderate", help="moderate your OWN comment sections (approval-gated)")
+    mo_sub = mo.add_subparsers(dest="op", required=True)
+    p = mo_sub.add_parser("scan", help="classify comments from a fixture file")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", required=True)
+    p.add_argument("--post", required=True)
+    p.add_argument("--fixture", required=True)
+    p = mo_sub.add_parser("hide", help="propose hiding a comment (approval-gated)")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", required=True)
+    p.add_argument("--post", required=True)
+    p.add_argument("--comment", required=True)
+    p.add_argument("--text", default="", help="comment text (for classification)")
+    p.add_argument("--reason", default="")
+    p = mo_sub.add_parser("approve", help="approve a hide proposal")
+    p.add_argument("--id", required=True)
+    p = mo_sub.add_parser("done", help="log an approved hide as performed")
+    p.add_argument("--id", required=True)
+    p = mo_sub.add_parser("list", help="list hide proposals")
+    p.add_argument("--status", default=None)
+    mo.set_defaults(func=cmd_moderate)
+
+    cap = sub.add_parser("caption", help="platform-optimized caption generator")
+    cap_sub = cap.add_subparsers(dest="op", required=True)
+    p = cap_sub.add_parser("generate", help="generate one gated caption")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--topic", required=True)
+    p.add_argument("--tone", default="bold",
+                   help="bold|playful|educational|calm")
+    p.add_argument("--account", default="", help="optional: identity/voice gates as owner")
+    p.add_argument("--hashtags", default="", help="comma-separated extras")
+    p = cap_sub.add_parser("variants", help="n caption variants for A/B")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--topic", required=True)
+    p.add_argument("--tone", default="bold")
+    p.add_argument("--account", default="")
+    p.add_argument("--hashtags", default="")
+    p.add_argument("--n", type=int, default=5)
+    cap.set_defaults(func=cmd_caption)
+
+    vi = sub.add_parser("video", help="local video editing via ffmpeg")
+    vi.add_argument("--dry-run", action="store_true",
+                    help="print ffmpeg commands without executing")
+    vi_sub = vi.add_subparsers(dest="op", required=True)
+    p = vi_sub.add_parser("info", help="probe duration/resolution/fps")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p = vi_sub.add_parser("clip", help="extract [start, start+duration)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--start", required=True)
+    p.add_argument("--duration", required=True)
+    p.add_argument("--output", required=True)
+    p = vi_sub.add_parser("trim", help="cut [start, end) frame-accurately")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--start", required=True)
+    p.add_argument("--end", required=True)
+    p.add_argument("--output", required=True)
+    p = vi_sub.add_parser("concat", help="join files (same codec/res)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--inputs", required=True, help="comma-separated paths")
+    p.add_argument("--output", required=True)
+    p = vi_sub.add_parser("to-vertical", help="16:9 -> 9:16 blurred-fill")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p = vi_sub.add_parser("to-horizontal", help="9:16 -> 16:9 blurred-fill")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p = vi_sub.add_parser("frame", help="extract a still (thumbnail source)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--at", default="3")
+    p.add_argument("--output", required=True)
+    p = vi_sub.add_parser("compress", help="re-encode to an upload preset")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--preset", default="tiktok",
+                   help="tiktok|reels|shorts|youtube")
+    p = vi_sub.add_parser("plan", help="stored edit plans")
+    pl_sub = p.add_subparsers(dest="pop", required=True)
+    p = pl_sub.add_parser("create", help="store an edit plan (JSON steps)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--name", required=True)
+    p.add_argument("--steps", required=True, help="JSON list of {op, ...} steps")
+    p.add_argument("--description", default="")
+    pl_sub.add_parser("list", help="list plans")
+    p = pl_sub.add_parser("show", help="show a plan")
+    p.add_argument("--name", required=True)
+    p = pl_sub.add_parser("run", help="execute a plan")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--name", required=True)
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    vi.set_defaults(func=cmd_video)
+
+    au = sub.add_parser("audio", help="audio clipping/mixing via ffmpeg")
+    au.add_argument("--dry-run", action="store_true",
+                    help="print ffmpeg commands without executing")
+    au_sub = au.add_subparsers(dest="op", required=True)
+    p = au_sub.add_parser("clip", help="clip audio with fades")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--start", required=True)
+    p.add_argument("--duration", required=True)
+    p.add_argument("--fade-in", type=float, default=0)
+    p.add_argument("--fade-out", type=float, default=0)
+    p.add_argument("--output", required=True)
+    p = au_sub.add_parser("loop", help="loop audio to a duration")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--duration", required=True)
+    p.add_argument("--output", required=True)
+    p = au_sub.add_parser("mix", help="voiceover + ducked music bed")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--voiceover", required=True)
+    p.add_argument("--bed", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--duck-db", type=float, default=12)
+    p = au_sub.add_parser("extract", help="pull audio from a video")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--video", required=True)
+    p.add_argument("--output", required=True)
+    p = au_sub.add_parser("normalize", help="loudness to platform norms")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--preset", default="tiktok",
+                   help="tiktok|youtube|podcast")
+    au.set_defaults(func=cmd_audio)
 
     d = sub.add_parser("doctor", help="environment checks")
     d.set_defaults(func=cmd_doctor)

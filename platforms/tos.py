@@ -41,6 +41,7 @@ ACTION_CLASSES = (
     "automated_data_collection",
     "profile_modification",
     "automated_reading",
+    "comment_moderation",
 )
 
 STATUSES = ("prohibited", "restricted", "allowed")
@@ -57,6 +58,8 @@ CLI_OP_TO_CLASS = {
     "profile": "profile_modification",
     "read": "automated_reading",
     "watch": "automated_data_collection",
+    "hide": "comment_moderation",
+    "scan": "automated_data_collection",
 }
 
 

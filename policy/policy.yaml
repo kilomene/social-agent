@@ -119,5 +119,11 @@ autonomy:
 growth:
   note: "Organic growth only. growth/ modules (strategy, goals, audit, youtube packaging) inform content choices; they cannot authorize acting operations or override the ToS layer. Content gates (voice + identity + secrets) run on every `post draft` and `engage comment`."
 
+moderation:
+  auto_hide:
+    - double your money
+    - free crypto giveaway
+  note: "Comment moderation applies ONLY to the user's own comment sections. `moderate hide` creates a proposal requiring explicit approval; proposals matching a pre-approved auto_hide pattern may be auto-approved (still logged to actions.json). The agent never touches anyone else's content."
+
 identity:
   note: "On social platforms the agent IS the account owner: first-person, owner's name and voice, never claims to be an AI/agent/chatbot. Personas live in <home>/identity/accounts/<label>.md and always belong to the verified account owner (ghostwriter pattern, never a third party). Identity-break text in a draft is refused and logged to refusals.jsonl."

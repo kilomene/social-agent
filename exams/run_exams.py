@@ -612,6 +612,139 @@ def exam_27_post_draft_identity_refused():
 
 
 
+def exam_28_toxic_comment_flagged():
+    ex = Exam("exam-28", "moderate scan flags toxic and spam comments")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "comments_moderation.json")
+    r = run(home, None, "moderate", "scan", "--platform", "tiktok",
+            "--account", "main", "--post", "v1", "--fixture", fx)
+    ex.check("scan exits 0", r.returncode == 0, r.stderr.strip()[:120])
+    ex.check("toxic comment flagged", "[toxic]" in r.stdout, r.stdout[:200])
+    ex.check("spam comment flagged", "[spam]" in r.stdout, r.stdout[:200])
+    ex.check("question classified", "[question]" in r.stdout, r.stdout[:200])
+    ex.check("praise classified", "[praise]" in r.stdout, r.stdout[:200])
+    return ex
+
+
+def exam_29_spam_autohide_rule_proposes():
+    ex = Exam("exam-29", "pre-approved auto-hide rule auto-approves a hide proposal")
+    home = fresh_home()
+    setup_account(home)
+    pol = os.path.join(home, "policy.yaml")
+    write_policy(pol, moderation={"auto_hide": ["double your money"],
+                                 "note": "test"})
+    r = run(home, pol, "moderate", "hide", "--platform", "tiktok",
+            "--account", "main", "--post", "v1", "--comment", "c3",
+            "--text", "DM me, double your money now!!",
+            "--reason", "money-doubling scam")
+    ex.check("hide exits 0", r.returncode == 0, r.stderr.strip()[:160])
+    ex.check("auto-approved under pre-approved rule", "AUTO-APPROVED" in r.stdout,
+             r.stdout[:160])
+    log = state(home, "moderation.json", [])
+    ex.check("logged as approved", log and log[0]["status"] == "approved",
+             str(log[:1])[:160])
+    ex.check("auto_hide rule recorded", log and log[0].get("auto_approved") is True,
+             str(log[:1])[:160])
+    return ex
+
+
+def exam_30_hide_needs_approval():
+    ex = Exam("exam-30", "moderate hide without approval is refused at done")
+    home = fresh_home()
+    setup_account(home)
+    r = run(home, None, "moderate", "hide", "--platform", "tiktok",
+            "--account", "main", "--post", "v1", "--comment", "c9",
+            "--text", "mildly rude comment", "--reason", "borderline")
+    mid = state(home, "moderation.json", [])[0]["id"]
+    ex.check("proposal created (not executed)", r.returncode == 0 and
+             "DRY-RUN proposal" in r.stdout, r.stdout[:160])
+    r2 = run(home, None, "moderate", "done", "--id", mid)
+    ex.check("done refused before approval", r2.returncode != 0,
+             r2.stderr.strip()[:160])
+    ex.check("status still proposed",
+             state(home, "moderation.json", [])[0]["status"] == "proposed")
+    r3 = run(home, None, "moderate", "approve", "--id", mid)
+    ex.check("explicit approval works", r3.returncode == 0 and
+             "APPROVED" in r3.stdout, (r3.stdout + r3.stderr)[:160])
+    r4 = run(home, None, "moderate", "done", "--id", mid)
+    ex.check("done after approval logged",
+             state(home, "moderation.json", [])[0]["status"] == "done",
+             r4.stdout[:120])
+    return ex
+
+
+def exam_31_caption_passes_gates():
+    ex = Exam("exam-31", "caption generation passes voice+identity gates")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "identity", "create", "--account", "main",
+        "--name", "Exam Owner", "--voice-traits", "direct,playful")
+    r = run(home, None, "caption", "generate", "--platform", "tiktok",
+            "--topic", "sora camera moves", "--tone", "bold", "--account", "main")
+    ex.check("generate exits 0", r.returncode == 0, r.stderr.strip()[:160])
+    ex.check("hashtag norms honored (3-5 for tiktok)",
+             3 <= r.stdout.count("#") <= 5, r.stdout[-200:])
+    ex.check("no voice warning on generated caption",
+             "voice warning" not in r.stdout, r.stdout[-200:])
+    ex.check("first-person owner voice present",
+             any(w in r.stdout for w in (" I ", "I've", "I'll", "my ")),
+             r.stdout[:200])
+    return ex
+
+
+def exam_32_video_info_clip_fixture():
+    import shutil
+    ex = Exam("exam-32", "video info/clip work on a generated fixture")
+    home = fresh_home()
+    if not shutil.which("ffmpeg"):
+        r = run(home, None, "video", "clip", "--input", "x.mp4",
+                "--start", "0", "--duration", "1", "--output", "y.mp4")
+        ex.check("missing ffmpeg refuses gracefully",
+                 r.returncode == 1 and "SETUP.md" in r.stderr, r.stderr[:160])
+        return ex
+    mp4 = os.path.join(home, "exam.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                    "-i", "testsrc=duration=4:size=640x480:rate=30",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", mp4],
+                   check=True)
+    r = run(home, None, "video", "info", "--input", mp4)
+    ex.check("info exits 0", r.returncode == 0, r.stderr[:120])
+    ex.check("info reports 640x480", "640x480" in r.stdout, r.stdout[:160])
+    out = os.path.join(home, "clip.mp4")
+    r2 = run(home, None, "video", "clip", "--input", mp4, "--start", "1",
+             "--duration", "2", "--output", out)
+    ex.check("clip exits 0 and prints its ffmpeg command",
+             r2.returncode == 0 and "RUN: ffmpeg" in r2.stdout,
+             r2.stdout[:200])
+    ex.check("clip output exists", os.path.exists(out) and
+             os.path.getsize(out) > 1000)
+    r3 = run(home, None, "video", "clip", "--input", mp4, "--start", "0",
+             "--duration", "1", "--output", mp4)
+    ex.check("refuses to overwrite input", r3.returncode != 0, r3.stderr[:160])
+    return ex
+
+
+def exam_33_audio_clip_fades_args():
+    ex = Exam("exam-33", "audio clip with fades emits correct ffmpeg filter args")
+    home = fresh_home()
+    r = run(home, None, "audio", "clip", "--input", "song.mp3",
+            "--start", "30", "--duration", "15",
+            "--fade-in", "2", "--fade-out", "3",
+            "--output", os.path.join(home, "out.mp3"), "--dry-run")
+    ex.check("dry-run exits 0", r.returncode == 0, r.stderr[:120])
+    ex.check("fade-in filter arg present", "afade=t=in:st=0:d=2" in r.stdout,
+             r.stdout[:240])
+    ex.check("fade-out filter arg present", "afade=t=out:st=12" in r.stdout,
+             r.stdout[:240])
+    ex.check("dry-run executed nothing",
+             not os.path.exists(os.path.join(home, "out.mp3")))
+    ex.check("exact command printed for transparency", "RUN: ffmpeg" in r.stdout,
+             r.stdout[:120])
+    return ex
+
+
+
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
          exam_3_rate_limit_enforced,
@@ -638,7 +771,13 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_24_growth_audit_pillars,
          exam_25_identity_flags_ai_claim,
          exam_26_identity_first_person_passes,
-         exam_27_post_draft_identity_refused]
+         exam_27_post_draft_identity_refused,
+         exam_28_toxic_comment_flagged,
+         exam_29_spam_autohide_rule_proposes,
+         exam_30_hide_needs_approval,
+         exam_31_caption_passes_gates,
+         exam_32_video_info_clip_fixture,
+         exam_33_audio_clip_fades_args]
 
 
 def main():

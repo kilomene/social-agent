@@ -64,3 +64,8 @@ actions:
     basis: "Keep automated reading low-volume and limited to the user's own account. It is not affirmatively permitted outside published interfaces; the sanctioned path for programmatic reads is the official X API."
     sources:
       - https://x.com/en/tos
+  comment_moderation:
+    status: allowed
+    basis: "Creators may moderate comments on their own posts (hide, delete, report). This tool only moderates the user's OWN comment sections, proposes hides, and requires explicit approval or a pre-approved policy rule before anything is hidden; it never touches anyone else's content."
+    sources:
+      - https://x.com/en/tos

@@ -185,3 +185,40 @@ only acting pauses.
   Proposals are **never auto-applied** — the human reviews and applies them.
 - `study experiment start/list/conclude` tracks A/B variants (titles, hooks,
   thumbnails) and concludes winners from engagement deltas.
+
+## 17. Comment moderation — your posts only, approval-gated
+
+- `moderate scan --platform tiktok --account main --post <id> --fixture f.json`
+  classifies each comment as **ok / question / praise / spam / toxic** with
+  reasons (lexicon-based: profanity/hate patterns, ALL-CAPS rage, link/DM
+  scams, crypto giveaways, repetitive text). `question` feeds the content-idea
+  watcher; `praise` feeds sentiment.
+- `moderate hide` **proposes** hiding a comment (dry-run). It is never
+  executed without **explicit approval** (`moderate approve`) — or a
+  pre-approved rule from `policy.yaml` `moderation.auto_hide` (e.g. slur or
+  scam patterns the user has already green-lit). Both paths are logged.
+- Scope is hard: the agent moderates **only the user's own comment
+  sections** — creators moderating their own posts. It never touches anyone
+  else's content. ToS layer classifies this as `comment_moderation`
+  (allowed on all 6 platforms for own-content moderation).
+- The comment watcher with `moderate: true` auto-classifies new comments:
+  toxic/spam become high-severity events (crisis can escalate), and
+  auto-hide-rule matches attach hide *proposals*.
+
+## 18. Content production: captions, video, audio
+
+- `caption generate --platform tiktok --topic "..." --tone bold` builds a
+  platform-normed caption (hook + body + CTA + hashtag set per platform
+  norms). `caption variants --n 5` gives A/B variants. Every caption passes
+  the content gates (secrets → identity → voice) before it is shown.
+- `video` wraps **ffmpeg** (the repo's only external dependency; see
+  `video/SETUP.md`): `info`, `clip`, `trim`, `concat`, `to-vertical`
+  (16:9 → 9:16 blurred-fill for TikTok/Reels/Shorts), `to-horizontal`,
+  `frame` (thumbnail stills), `compress` (upload presets), and stored
+  multi-step `video plan create/run`. Every command prints the exact ffmpeg
+  invocation (`--dry-run` previews it) and **refuses to overwrite inputs**.
+- `audio` (same ffmpeg contract): `clip` with fades, `loop`, `mix`
+  (voiceover + sidechain-ducked music bed), `extract` (audio from video),
+  `normalize` (loudness to documented platform targets). See `audio/MUSIC.md`:
+  the tool clips audio **you provide** — use platform-licensed libraries or
+  your own audio; it never sources copyrighted music itself.

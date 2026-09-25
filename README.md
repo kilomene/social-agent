@@ -104,6 +104,48 @@ social-agent study experiment conclude --name hook-test --metric-a 4.2 --metric-
 Every `post draft` and `engage comment` automatically runs the content gates:
 secrets → refused, identity breaks → refused, AI-ish voice → warning.
 
+## Moderation + content production
+
+Comment moderation (your posts only, approval-gated) and local content
+production (captions, video, audio) — see guardrails §17–18:
+
+```bash
+# classify comments: ok / question / praise / spam / toxic
+social-agent moderate scan --platform tiktok --account main --post v1 \
+    --fixture watchers/fixtures/comments_moderation.json
+# propose hiding a comment (explicit approval required, or pre-approved rule)
+social-agent moderate hide --platform tiktok --account main --post v1 \
+    --comment c3 --text "DM me for free crypto!!" --reason "DM scam"
+social-agent moderate approve --id m-abc123
+social-agent moderate done --id m-abc123
+
+# platform-optimized captions (pass voice + identity gates)
+social-agent caption generate --platform tiktok --topic "sora camera moves" \
+    --tone bold --account main
+social-agent caption variants --platform x --topic "sora camera moves" --n 5
+
+# video editing via ffmpeg (only external dependency; see video/SETUP.md)
+social-agent video info --input raw.mp4
+social-agent video clip --input raw.mp4 --start 10 --duration 30 --output cut.mp4
+social-agent video to-vertical --input cut.mp4 --output short.mp4
+social-agent video frame --input cut.mp4 --at 3 --output thumb.jpg
+social-agent video compress --input short.mp4 --output upload.mp4 --preset tiktok
+social-agent video plan create --name ep1 \
+    --steps '[{"op":"clip","start":0,"duration":20},{"op":"to-vertical"}]'
+social-agent video plan run --name ep1 --input raw.mp4 --output ep1.mp4
+
+# audio: clips, loops, ducked mixes, extraction, loudness normalization
+social-agent audio clip --input song.mp3 --start 30 --duration 15 \
+    --fade-in 2 --fade-out 3 --output hook.mp3
+social-agent audio mix --voiceover vo.mp3 --bed music.mp3 --output final.mp3
+social-agent audio normalize --input final.mp3 --output loud.mp3 --preset tiktok
+```
+
+Every video/audio command prints the exact ffmpeg invocation before running
+(`--dry-run` previews without executing) and refuses to overwrite inputs.
+Audio operates on files **you provide** — use platform-licensed music
+libraries or your own audio (see `audio/MUSIC.md`).
+
 ## Heartbeats
 
 Every watcher run emits `<base>/<watcher-id>/start`, then success or `/fail`
