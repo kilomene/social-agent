@@ -22,7 +22,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install Python dependencies
-        run: python3 -m pip install --upgrade pip pytest pyyaml
+        run: python3 -m pip install --upgrade pip pytest pyyaml pillow
 
       - name: Run test suite
         run: python3 -m pytest tests/ -q
