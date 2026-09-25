@@ -227,3 +227,23 @@ def test_research_and_analytics(home):
     assert len(plans[0]["queries"]["tiktok"]) == 4
     r = cli("analytics", home=home)
     assert r.returncode == 0 and "events: 0" in r.stdout
+
+
+def test_resolve_account_scoped_by_platform(home):
+    # regression: two accounts sharing label 'main' on different platforms;
+    # platform-scoped commands must resolve the account on THEIR platform,
+    # not the first account with a matching label.
+    add_account(home, platform="tiktok", username="tt_user", label="main")
+    add_account(home, platform="x", username="x_user", label="main")
+    r = cli("post", "draft", "--platform", "x", "--account", "main",
+            "--text", "hello world", "--id", "px1", home=home)
+    assert r.returncode == 0, r.stderr
+    assert "x/x_user" in r.stdout, r.stdout
+    r = cli("post", "draft", "--platform", "tiktok", "--account", "main",
+            "--text", "hello world", "--id", "pt1", home=home)
+    assert r.returncode == 0, r.stderr
+    assert "tiktok/tt_user" in r.stdout, r.stdout
+    # unknown label on a platform fails closed
+    r = cli("post", "draft", "--platform", "x", "--account", "nope",
+            "--text", "hello", "--id", "px2", home=home)
+    assert r.returncode == 1 and "unknown account" in r.stderr

@@ -33,6 +33,7 @@
   "tests/test_cli.py::test_engage_dry_run_default_and_approval_gate",
   "tests/test_cli.py::test_post_flow",
   "tests/test_cli.py::test_research_and_analytics",
+  "tests/test_cli.py::test_resolve_account_scoped_by_platform",
   "tests/test_cli.py::test_ticket_cancel_and_fail",
   "tests/test_cli.py::test_ticket_lifecycle_via_approval",
   "tests/test_cli.py::test_watch_bad_config_rejected",

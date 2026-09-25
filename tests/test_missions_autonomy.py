@@ -78,6 +78,7 @@ def test_autonomous_like_in_scope_auto_approves(home):
 
 def test_autonomous_out_of_scope_blocked(home):
     add_account(home)
+    add_account(home, platform="instagram", username="ig_user", label="main")
     make_mission(home)
     _mc(home, "autonomy", "grant", "--mission", "m1", "--confirm")
     # wrong platform

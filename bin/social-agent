@@ -383,12 +383,15 @@ def autonomous_decision(platform, action, text=""):
 
 # -------------------------------------------------------------- helpers ---
 
-def resolve_account(ref):
+def resolve_account(ref, platform=None):
     accounts = load_json("accounts.json", [])
-    for a in accounts:
-        if a["username"] == ref or a.get("label") == ref:
-            return a
-    raise UsageError(f"unknown account {ref!r}; see `accounts list`")
+    cands = [a for a in accounts if a["username"] == ref or a.get("label") == ref]
+    if platform:
+        cands = [a for a in cands if a.get("platform") == platform]
+    if cands:
+        return cands[0]
+    hint = f" on platform {platform!r}" if platform else ""
+    raise UsageError(f"unknown account {ref!r}{hint}; see `accounts list`")
 
 
 def parse_kv(pairs):
@@ -511,7 +514,7 @@ def cmd_watch(args):
             raise UsageError(
                 f"unknown watcher type {args.type!r} (see: {', '.join(sorted(REGISTRY))})")
         check_platform(args.platform)
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         try:
             tos_mod.check_tos(args.platform, "automated_data_collection")
         except tos_mod.ToSRefusal as e:
@@ -680,7 +683,7 @@ def cmd_post(args):
     queue = load_json("queue.json", [])
     if args.op == "draft":
         check_platform(args.platform)
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         label = acct.get("label") or acct["username"]
         _warn(content_gates(args.platform, label, args.text or "", "post_draft"))
         if args.video:
@@ -791,7 +794,7 @@ def cmd_engage(args):
     actions = load_json("actions.json", [])
     if args.op in ENGAGE_ACTIONS:
         check_platform(args.platform)
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         if args.op == "comment" and not args.text:
             raise UsageError("comment requires --text")
         try:
@@ -1109,7 +1112,7 @@ def _profiles():
 def cmd_profile(args):
     data = _profiles()
     if args.op == "view":
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         prof = data["accounts"].get(acct["username"], {})
         print(f"account : {acct['username']} [{acct['platform']}]")
         for f in PROFILE_FIELDS:
@@ -1119,7 +1122,7 @@ def cmd_profile(args):
         if pending:
             print(f"pending proposals: {', '.join(p['id'] for p in pending)}")
     elif args.op == "update":
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         changes = {}
         if args.display_name is not None:
             changes["display_name"] = args.display_name
@@ -1438,7 +1441,7 @@ def _csv_list(s):
 
 def cmd_identity(args):
     if args.op == "create":
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         label = acct.get("label") or acct["username"]
         meta = {"name": args.name,
                 "voice_traits": _csv_list(args.voice_traits),
@@ -1461,7 +1464,7 @@ def cmd_identity(args):
                                   f"{args.name}. Edit freely."))
         print(f"persona created for {label} at {p}")
     elif args.op == "show":
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         label = acct.get("label") or acct["username"]
         meta, body = identity_mod.load_persona(home_dir(), label)
         if meta is None:
@@ -1475,7 +1478,7 @@ def cmd_identity(args):
         if body:
             print(f"\n{body}")
     elif args.op == "check":
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         label = acct.get("label") or acct["username"]
         res = identity_mod.check_identity(args.text, label, home_dir())
         if res["pass"]:
@@ -1583,7 +1586,7 @@ def _moderation_log():
 def cmd_moderate(args):
     if args.op == "scan":
         check_platform(args.platform)
-        resolve_account(args.account)
+        resolve_account(args.account, getattr(args, "platform", None))
         tos_mod.check_tos(args.platform, "automated_data_collection")
         if not args.fixture:
             raise UsageError("moderate scan needs --fixture (JSON list of comments)")
@@ -1598,7 +1601,7 @@ def cmd_moderate(args):
             print(f"    score {cls['score']}: {'; '.join(cls['reasons'][:3])}")
     elif args.op == "hide":
         check_platform(args.platform)
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         try:
             guard_acting(args.platform, "hide")
         except RateLimited:
@@ -1731,7 +1734,7 @@ def cmd_approvals(args):
 # ----------------------------------------------------------------- people ---
 
 def _people_account(args):
-    acct = resolve_account(args.account)
+    acct = resolve_account(args.account, getattr(args, "platform", None))
     return acct["username"]
 
 
@@ -2454,7 +2457,7 @@ def cmd_caption(args):
     check_platform(args.platform)
     label = ""
     if args.account:
-        acct = resolve_account(args.account)
+        acct = resolve_account(args.account, getattr(args, "platform", None))
         label = acct.get("label") or acct["username"]
     extra = _csv_list(args.hashtags)
     if args.op == "generate":
