@@ -1,0 +1,29 @@
+name: exams
+
+on:
+  schedule:
+    # Weekly regression run — the full exam suite is slow (real CLI, isolated state).
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+
+jobs:
+  exam-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run exam suite
+        run: python3 exams/run_exams.py
+
+      - name: Upload exam results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exam-results
+          path: exams/RESULTS.md
