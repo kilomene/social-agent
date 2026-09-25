@@ -1,0 +1,668 @@
+#!/usr/bin/env python3
+"""social-agent: autonomous social-media monitoring toolkit (offline-capable CLI).
+
+Safety model (see policy/guardrails.md):
+  * Watchers are READ-ONLY: they observe and PROPOSE, never act alone.
+  * Acting operations (post, like, comment, follow, retweet, DM) are created
+    as dry-run proposals and require an explicit per-action approval record.
+  * Per-platform rate limits and quiet hours are enforced by this CLI.
+  * No credentials are ever stored. State lives in $SOCIAL_AGENT_HOME
+    (default ~/.social-agent) as plain JSON.
+
+Everything works offline: watchers poll fixture files, engagement actions are
+proposed/approved/logged here, and live execution happens in a real browser
+session driven by the user or their agent.
+"""
+
+import argparse
+import json
+import os
+import random
+import sys
+import time
+from datetime import datetime, timezone
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from policy import yaml_lite
+from platforms.base import get_adapter, SUPPORTED_PLATFORMS
+from watchers import REGISTRY, WatcherError
+
+VERSION = "0.1.0"
+
+
+class Refused(Exception):
+    """Policy refusal: rate limit hit, quiet hours, or missing approval."""
+
+
+class UsageError(Exception):
+    """Bad input: unknown id, bad config, missing account."""
+
+
+# ---------------------------------------------------------------- state ---
+
+def home_dir():
+    return os.environ.get("SOCIAL_AGENT_HOME", os.path.expanduser("~/.social-agent"))
+
+
+def _path(name):
+    return os.path.join(home_dir(), name)
+
+
+def load_json(name, default):
+    p = _path(name)
+    if not os.path.exists(p):
+        return default
+    with open(p, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def save_json(name, data):
+    os.makedirs(home_dir(), exist_ok=True)
+    p = _path(name)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, p)
+
+
+def utcnow():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def new_id(prefix):
+    return f"{prefix}-{random.randrange(16 ** 6):06x}"
+
+
+def read_events():
+    p = _path("events.jsonl")
+    if not os.path.exists(p):
+        return []
+    out = []
+    with open(p, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+# --------------------------------------------------------------- policy ---
+
+_policy_cache = None
+
+
+def policy_path():
+    return os.environ.get("SOCIAL_AGENT_POLICY",
+                          os.path.join(REPO_ROOT, "policy", "policy.yaml"))
+
+
+def get_policy():
+    global _policy_cache
+    if _policy_cache is None:
+        _policy_cache = yaml_lite.load(policy_path())
+    return _policy_cache
+
+
+def check_rate_limit(platform):
+    pol = get_policy()["rate_limits"]
+    lim = pol.get(platform, pol["default"])
+    now = time.time()
+    log = load_json("ratelimit.json", {}).get(platform, [])
+    log = [t for t in log if now - t < 86400]
+    hour = [t for t in log if now - t < 3600]
+    if len(hour) >= lim["actions_per_hour"]:
+        raise Refused(
+            f"rate limit: {platform} hourly cap ({lim['actions_per_hour']}) reached")
+    if len(log) >= lim["actions_per_day"]:
+        raise Refused(
+            f"rate limit: {platform} daily cap ({lim['actions_per_day']}) reached")
+
+
+def record_action(platform):
+    log = load_json("ratelimit.json", {})
+    log.setdefault(platform, []).append(time.time())
+    save_json("ratelimit.json", log)
+
+
+def in_quiet_hours(now=None):
+    qh = get_policy()["quiet_hours"]
+    if not qh.get("enabled"):
+        return False
+    now = now or datetime.now().astimezone()
+    s, e = qh["start"], qh["end"]
+    cur = now.strftime("%H:%M")
+    if s <= e:
+        return s <= cur < e
+    return cur >= s or cur < e
+
+
+def guard_acting(platform, action):
+    """Gate every acting operation: quiet hours + rate limits."""
+    if in_quiet_hours():
+        raise Refused("quiet hours active: acting operations are paused")
+    check_rate_limit(platform)
+
+
+def approval_valid(action):
+    age_h = (time.time() - action.get("approved_at_ts", 0)) / 3600.0
+    return age_h <= get_policy()["approvals"]["expiry_hours"]
+
+
+# -------------------------------------------------------------- helpers ---
+
+def resolve_account(ref):
+    accounts = load_json("accounts.json", [])
+    for a in accounts:
+        if a["username"] == ref or a.get("label") == ref:
+            return a
+    raise UsageError(f"unknown account {ref!r}; see `accounts list`")
+
+
+def parse_kv(pairs):
+    cfg = {}
+    for p in pairs or []:
+        if "=" not in p:
+            raise UsageError(f"bad --set value {p!r}; use key=value")
+        k, v = p.split("=", 1)
+        try:
+            cfg[k] = json.loads(v)
+        except (json.JSONDecodeError, ValueError):
+            cfg[k] = v
+    return cfg
+
+
+def check_platform(name):
+    if name not in SUPPORTED_PLATFORMS:
+        raise UsageError(
+            f"unknown platform {name!r} (supported: {', '.join(SUPPORTED_PLATFORMS)})")
+    return name
+
+
+# --------------------------------------------------------------- accounts ---
+
+def cmd_accounts(args):
+    accounts = load_json("accounts.json", [])
+    if args.op == "list":
+        if not accounts:
+            print("no accounts configured")
+            return
+        for a in accounts:
+            label = f" ({a['label']})" if a.get("label") else ""
+            print(f"{a['username']}{label} [{a['platform']}] added {a['added'][:10]}")
+    elif args.op == "add":
+        check_platform(args.platform)
+        if any(a["username"] == args.username and a["platform"] == args.platform
+               for a in accounts):
+            raise UsageError(f"account {args.username!r} already added for {args.platform}")
+        accounts.append({
+            "platform": args.platform,
+            "username": args.username,
+            "label": args.label or "",
+            "added": utcnow(),
+        })
+        save_json("accounts.json", accounts)
+        print(f"added {args.username} [{args.platform}]"
+              + (f" as {args.label!r}" if args.label else "")
+              + " (no credentials stored)")
+    elif args.op == "remove":
+        before = len(accounts)
+        accounts = [a for a in accounts
+                    if not (a["username"] == args.ref or a.get("label") == args.ref)]
+        if len(accounts) == before:
+            raise UsageError(f"unknown account {args.ref!r}")
+        save_json("accounts.json", accounts)
+        print(f"removed {args.ref}")
+    elif args.op == "show":
+        a = resolve_account(args.ref)
+        adapter = get_adapter(a["platform"]).to_dict()
+        print(f"username : {a['username']}")
+        print(f"platform : {a['platform']} ({adapter['display']})")
+        print(f"label    : {a.get('label') or '-'}")
+        print(f"added    : {a['added']}")
+        print(f"auth     : {adapter['auth']}")
+
+
+# ------------------------------------------------------------------ watch ---
+
+def cmd_watch(args):
+    registry = load_json("watchers.json", {})
+    if args.op == "list":
+        if not registry:
+            print("no watchers configured")
+            return
+        for wid, rec in registry.items():
+            state = "enabled" if rec.get("enabled") else "stopped"
+            print(f"{wid} [{rec['type']}] {rec['platform']}/{rec['account']} ({state})")
+    elif args.op == "start":
+        if args.type not in REGISTRY:
+            raise UsageError(
+                f"unknown watcher type {args.type!r} (see: {', '.join(sorted(REGISTRY))})")
+        check_platform(args.platform)
+        acct = resolve_account(args.account)
+        config = parse_kv(args.set)
+        cls = REGISTRY[args.type]
+        probe = cls("probe", args.platform, acct["username"], config,
+                    home_dir(), args.fixture)
+        errors = probe.validate_config()
+        if errors:
+            raise UsageError("invalid config: " + "; ".join(errors))
+        wid = args.id or new_id("w")
+        if wid in registry:
+            raise UsageError(f"watcher id {wid!r} already exists")
+        registry[wid] = {
+            "id": wid, "type": args.type, "platform": args.platform,
+            "account": acct["username"], "config": config,
+            "fixture": args.fixture, "enabled": True, "started": utcnow(),
+        }
+        save_json("watchers.json", registry)
+        print(f"started watcher {wid} [{args.type}] on {args.platform}/{acct['username']}")
+    elif args.op == "stop":
+        rec = registry.get(args.id)
+        if not rec:
+            raise UsageError(f"unknown watcher {args.id!r}")
+        rec["enabled"] = False
+        save_json("watchers.json", registry)
+        print(f"stopped watcher {args.id}")
+    elif args.op == "status":
+        ids = [args.id] if args.id else sorted(registry)
+        if not ids:
+            print("no watchers configured")
+            return
+        for wid in ids:
+            rec = registry.get(wid)
+            if not rec:
+                raise UsageError(f"unknown watcher {wid!r}")
+            sp = _path(f"watchers/{wid}.json")
+            st = {}
+            if os.path.exists(sp):
+                with open(sp, encoding="utf-8") as fh:
+                    st = json.load(fh).get("state", {})
+            print(f"{wid} [{rec['type']}] {rec['platform']}/{rec['account']}")
+            print(f"  enabled={rec.get('enabled')} polls={st.get('polls', 0)} "
+                  f"events={st.get('events_found', 0)} last_poll={st.get('last_poll')}")
+    elif args.op == "run":
+        rec = registry.get(args.id)
+        if not rec:
+            raise UsageError(f"unknown watcher {args.id!r}")
+        if not rec.get("enabled"):
+            raise UsageError(f"watcher {args.id} is stopped")
+        cls = REGISTRY[rec["type"]]
+        w = cls(rec["id"], rec["platform"], rec["account"], rec["config"],
+                home_dir(), rec.get("fixture"))
+        try:
+            events = w.check()
+        except WatcherError as e:
+            raise UsageError(str(e))
+        print(f"poll ok: {len(events)} new event(s)")
+        for ev in events:
+            pa = ev.get("proposed_action")
+            prop = f" -> proposes: {pa['action']}" if pa else ""
+            print(f"  [{ev['severity']}] {ev['kind']}: {ev['summary'][:120]}{prop}")
+    elif args.op == "events":
+        events = read_events()
+        if args.watcher:
+            events = [e for e in events if e.get("watcher") == args.watcher]
+        events = events[-args.limit:]
+        if not events:
+            print("no events recorded")
+            return
+        for ev in events:
+            print(f"{ev['timestamp']} {ev['watcher']} [{ev['kind']}] {ev['summary'][:120]}")
+
+
+# ------------------------------------------------------------------- post ---
+
+def cmd_post(args):
+    queue = load_json("queue.json", [])
+    if args.op == "draft":
+        check_platform(args.platform)
+        acct = resolve_account(args.account)
+        pid = args.id or new_id("p")
+        queue.append({
+            "id": pid, "platform": args.platform, "account": acct["username"],
+            "text": args.text, "media": args.media or "",
+            "status": "draft", "created": utcnow(),
+        })
+        save_json("queue.json", queue)
+        print(f"drafted post {pid} for {args.platform}/{acct['username']}")
+    elif args.op == "list":
+        items = queue
+        if args.status:
+            items = [q for q in items if q["status"] == args.status]
+        if not items:
+            print("no posts")
+            return
+        for q in items:
+            print(f"{q['id']} [{q['status']}] {q['platform']}/{q['account']}: "
+                  f"{q['text'][:80]}")
+    elif args.op in ("queue", "approve"):
+        q = next((x for x in queue if x["id"] == args.id), None)
+        if not q:
+            raise UsageError(f"unknown post {args.id!r}")
+        if args.op == "queue":
+            if q["status"] != "draft":
+                raise UsageError(f"post {args.id} is {q['status']}, not draft")
+            q["status"] = "queued"
+            print(f"post {args.id} queued (still needs approval before any publishing)")
+        else:
+            if q["status"] not in ("draft", "queued"):
+                raise UsageError(f"post {args.id} is {q['status']}")
+            guard_acting(q["platform"], "post")
+            q["status"] = "approved"
+            q["approved_at"] = utcnow()
+            q["approved_at_ts"] = time.time()
+            record_action(q["platform"])
+            print(f"post {args.id} APPROVED for {q['platform']}/{q['account']}")
+            print("DRY-RUN: publish this in a real browser session; the CLI never posts by itself.")
+        save_json("queue.json", queue)
+
+
+# ----------------------------------------------------------------- engage ---
+
+ENGAGE_ACTIONS = ["like", "comment", "follow", "retweet"]
+
+
+def cmd_engage(args):
+    actions = load_json("actions.json", [])
+    if args.op in ENGAGE_ACTIONS:
+        check_platform(args.platform)
+        acct = resolve_account(args.account)
+        if args.op in ("comment",) and not args.text:
+            raise UsageError("comment requires --text")
+        guard_acting(args.platform, args.op)
+        aid = new_id("a")
+        actions.append({
+            "id": aid, "action": args.op, "platform": args.platform,
+            "account": acct["username"], "target": args.target,
+            "text": args.text or "", "status": "proposed",
+            "dry_run": True, "created": utcnow(),
+        })
+        record_action(args.platform)
+        save_json("actions.json", actions)
+        print(f"DRY-RUN proposal {aid}: {args.op} -> {args.target} "
+              f"[{args.platform}/{acct['username']}]")
+        print("No action was taken. Run `engage approve` to approve it explicitly.")
+    elif args.op == "list":
+        items = actions
+        if args.status:
+            items = [a for a in items if a["status"] == args.status]
+        if not items:
+            print("no engagement actions")
+            return
+        for a in items:
+            extra = f" {a['text'][:60]!r}" if a.get("text") else ""
+            print(f"{a['id']} [{a['status']}] {a['action']} -> {a['target']}"
+                  f" [{a['platform']}/{a['account']}] dry_run={a['dry_run']}{extra}")
+    elif args.op == "approve":
+        a = next((x for x in actions if x["id"] == args.id), None)
+        if not a:
+            raise UsageError(f"unknown action {args.id!r}")
+        if a["status"] != "proposed":
+            raise UsageError(f"action {args.id} is {a['status']}, not proposed")
+        guard_acting(a["platform"], a["action"])
+        a["status"] = "approved"
+        a["approved_at"] = utcnow()
+        a["approved_at_ts"] = time.time()
+        save_json("actions.json", actions)
+        print(f"action {args.id} APPROVED: {a['action']} -> {a['target']}")
+        print("Perform it in a real browser session, then log it with `engage done`.")
+    elif args.op == "done":
+        a = next((x for x in actions if x["id"] == args.id), None)
+        if not a:
+            raise UsageError(f"unknown action {args.id!r}")
+        if a["status"] != "approved":
+            raise UsageError(f"action {args.id} is {a['status']}; approve it first")
+        if not approval_valid(a):
+            a["status"] = "expired"
+            save_json("actions.json", actions)
+            raise Refused(f"approval for {args.id} expired "
+                          f"({get_policy()['approvals']['expiry_hours']}h); re-approve")
+        a["status"] = "done"
+        a["result"] = args.result or "performed in browser session"
+        a["done_at"] = utcnow()
+        save_json("actions.json", actions)
+        print(f"action {args.id} logged as done: {a['result']}")
+
+
+# --------------------------------------------------------------- research ---
+
+def cmd_research(args):
+    plats = [p.strip() for p in args.platforms.split(",")] if args.platforms else SUPPORTED_PLATFORMS
+    for p in plats:
+        check_platform(p)
+    words = [w for w in args.topic.lower().replace("-", " ").split() if w]
+    hashtags = ["#" + "".join(words), "#" + words[0]] if words else []
+    queries = {}
+    for p in plats:
+        queries[p] = [
+            args.topic,
+            f"{args.topic} tutorial",
+            f"{args.topic} breakdown",
+            " ".join(hashtags),
+        ]
+    plan = {
+        "topic": args.topic,
+        "platforms": plats,
+        "queries": queries,
+        "hashtags": hashtags,
+        "suggested_watchers": [
+            {"type": "feed", "note": f"feed watcher with keywords={words}"},
+            {"type": "follow", "note": "follow watcher on hashtags " + ", ".join(hashtags)},
+            {"type": "channel", "note": "channel watcher on relevant channels found during research"},
+        ],
+        "created": utcnow(),
+    }
+    plans = load_json("research.json", [])
+    plans.append(plan)
+    save_json("research.json", plans)
+    print(f"research plan for {args.topic!r} (offline: queries to run in browser/API sessions)")
+    for p in plats:
+        print(f"  {p}:")
+        for q in queries[p]:
+            print(f"    - {q}")
+    print(f"  hashtags: {', '.join(hashtags)}")
+    print("  suggested watchers:")
+    for s in plan["suggested_watchers"]:
+        print(f"    - [{s['type']}] {s['note']}")
+
+
+# -------------------------------------------------------------- analytics ---
+
+def cmd_analytics(args):
+    events = read_events()
+    if args.watcher:
+        events = [e for e in events if e.get("watcher") == args.watcher]
+    if args.days is not None:
+        cutoff = time.time() - args.days * 86400
+        events = [e for e in events
+                  if datetime.fromisoformat(e["timestamp"]).timestamp() >= cutoff]
+    print(f"events: {len(events)}")
+    if not events:
+        return
+    by_kind, by_platform, by_watcher = {}, {}, {}
+    for e in events:
+        by_kind[e.get("kind", "?")] = by_kind.get(e.get("kind", "?"), 0) + 1
+        by_platform[e.get("platform", "?")] = by_platform.get(e.get("platform", "?"), 0) + 1
+        by_watcher[e.get("watcher", "?")] = by_watcher.get(e.get("watcher", "?"), 0) + 1
+    print("by kind:")
+    for k, v in sorted(by_kind.items(), key=lambda x: -x[1]):
+        print(f"  {k}: {v}")
+    print("by platform:")
+    for k, v in sorted(by_platform.items(), key=lambda x: -x[1]):
+        print(f"  {k}: {v}")
+    print("by watcher:")
+    for k, v in sorted(by_watcher.items(), key=lambda x: -x[1]):
+        print(f"  {k}: {v}")
+    proposed = [e for e in events if e.get("proposed_action")]
+    print(f"events proposing actions: {len(proposed)}")
+    actions = load_json("actions.json", [])
+    by_status = {}
+    for a in actions:
+        by_status[a["status"]] = by_status.get(a["status"], 0) + 1
+    print(f"engagement actions: {len(actions)} " +
+          ", ".join(f"{k}={v}" for k, v in sorted(by_status.items())))
+
+
+# ----------------------------------------------------------------- doctor ---
+
+def cmd_doctor(args):
+    checks = []
+
+    def check(name, ok, detail=""):
+        checks.append((name, ok, detail))
+
+    check("python >= 3.8", sys.version_info >= (3, 8), sys.version.split()[0])
+    try:
+        os.makedirs(home_dir(), exist_ok=True)
+        probe = os.path.join(home_dir(), ".writetest")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+        check("state dir writable", True, home_dir())
+    except OSError as e:
+        check("state dir writable", False, str(e))
+    try:
+        pol = get_policy()
+        check("policy.yaml parses", True, f"version {pol.get('version')}")
+    except Exception as e:
+        check("policy.yaml parses", False, str(e))
+    for p in SUPPORTED_PLATFORMS:
+        try:
+            get_adapter(p)
+            check(f"platform adapter: {p}", True)
+        except Exception as e:
+            check(f"platform adapter: {p}", False, str(e))
+    check("watcher types", True, ", ".join(sorted(REGISTRY)))
+    fx = os.path.join(REPO_ROOT, "watchers", "fixtures")
+    nfx = len([f for f in os.listdir(fx) if f.endswith(".json")]) if os.path.isdir(fx) else 0
+    check("sample fixtures", nfx > 0, f"{nfx} fixture files")
+    check("credentials stored in repo", False, "good: none (by design)")
+
+    failed = 0
+    for name, ok, detail in checks:
+        # the credentials check is inverted: ok=False is the desired state
+        good = ok if name != "credentials stored in repo" else not ok
+        mark = "ok  " if good else "FAIL"
+        if not good:
+            failed += 1
+        print(f"[{mark}] {name}" + (f" — {detail}" if detail else ""))
+    if failed:
+        raise UsageError(f"{failed} check(s) failed")
+    print("doctor: all checks passed")
+
+
+# ------------------------------------------------------------------- main ---
+
+def build_parser():
+    ap = argparse.ArgumentParser(
+        prog="social-agent",
+        description="Autonomous social-media monitoring toolkit. "
+                    "Watchers observe and propose; acting needs explicit approval.")
+    ap.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("accounts", help="list/configure accounts (no credentials stored)")
+    a_sub = a.add_subparsers(dest="op", required=True)
+    a_sub.add_parser("list", help="list configured accounts")
+    p = a_sub.add_parser("add", help="add an account")
+    p.add_argument("--platform", required=True, help=",".join(SUPPORTED_PLATFORMS))
+    p.add_argument("--username", required=True)
+    p.add_argument("--label", default="")
+    p = a_sub.add_parser("remove", help="remove an account")
+    p.add_argument("ref")
+    p = a_sub.add_parser("show", help="show account + platform auth notes")
+    p.add_argument("ref")
+    a.set_defaults(func=cmd_accounts)
+
+    w = sub.add_parser("watch", help="manage poll-based watchers")
+    w_sub = w.add_subparsers(dest="op", required=True)
+    p = w_sub.add_parser("start", help="start a watcher")
+    p.add_argument("--type", required=True, help=",".join(sorted(REGISTRY)))
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", required=True)
+    p.add_argument("--set", action="append", default=[], help="config key=value (repeatable)")
+    p.add_argument("--fixture", default=None, help="JSON fixture file for offline polling")
+    p.add_argument("--id", default=None, help="watcher id (generated if omitted)")
+    w_sub.add_parser("list", help="list watchers")
+    p = w_sub.add_parser("stop", help="stop a watcher")
+    p.add_argument("id")
+    p = w_sub.add_parser("status", help="watcher status")
+    p.add_argument("id", nargs="?")
+    p = w_sub.add_parser("run", help="run one poll tick now")
+    p.add_argument("id")
+    p = w_sub.add_parser("events", help="show recorded events")
+    p.add_argument("--watcher", default=None)
+    p.add_argument("--limit", type=int, default=20)
+    w.set_defaults(func=cmd_watch)
+
+    p_ = sub.add_parser("post", help="draft/queue/approve posts (approval-gated)")
+    p_sub = p_.add_subparsers(dest="op", required=True)
+    p = p_sub.add_parser("draft", help="draft a post")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", required=True)
+    p.add_argument("--text", required=True)
+    p.add_argument("--media", default="")
+    p.add_argument("--id", default=None)
+    p = p_sub.add_parser("queue", help="move draft to queued")
+    p.add_argument("id")
+    p = p_sub.add_parser("approve", help="approve a post (rate-limited, quiet-hours aware)")
+    p.add_argument("id")
+    p = p_sub.add_parser("list", help="list posts")
+    p.add_argument("--status", default=None)
+    p_.set_defaults(func=cmd_post)
+
+    e = sub.add_parser("engage", help="propose/approve/log engagement (dry-run default)")
+    e_sub = e.add_subparsers(dest="op", required=True)
+    for act in ENGAGE_ACTIONS:
+        p = e_sub.add_parser(act, help=f"propose a {act} (dry-run, creates proposal)")
+        p.add_argument("--platform", required=True)
+        p.add_argument("--account", required=True)
+        p.add_argument("--target", required=True, help="post/user/message id or URL")
+        p.add_argument("--text", default="", help="comment/DM text (required for comment)")
+    p = e_sub.add_parser("approve", help="approve a proposed action")
+    p.add_argument("id")
+    p = e_sub.add_parser("done", help="log an approved action as performed")
+    p.add_argument("id")
+    p.add_argument("--result", default="")
+    p = e_sub.add_parser("list", help="list engagement actions")
+    p.add_argument("--status", default=None)
+    e.set_defaults(func=cmd_engage)
+
+    r = sub.add_parser("research", help="build a cross-platform topic research plan")
+    r.add_argument("topic")
+    r.add_argument("--platforms", default="",
+                   help="comma-separated subset (default: all)")
+    r.set_defaults(func=cmd_research)
+
+    n = sub.add_parser("analytics", help="engagement summaries from watcher state")
+    n.add_argument("--watcher", default=None)
+    n.add_argument("--days", type=int, default=None)
+    n.set_defaults(func=cmd_analytics)
+
+    d = sub.add_parser("doctor", help="environment checks")
+    d.set_defaults(func=cmd_doctor)
+
+    return ap
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        args.func(args)
+    except Refused as e:
+        print(f"REFUSED (policy): {e}", file=sys.stderr)
+        return 2
+    except UsageError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except WatcherError as e:
+        print(f"watcher error: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

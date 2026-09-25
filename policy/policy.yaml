@@ -1,0 +1,75 @@
+# social-agent policy (machine-readable)
+# Parsed by policy/yaml_lite.py (pure stdlib). Keep to this subset:
+# nested mappings (2-space indent), "- item" lists, "key: value" scalars.
+# No flow syntax, no anchors, no multi-line strings.
+
+version: 1
+
+defaults:
+  mode: propose
+  dry_run: true
+  require_approval: true
+
+approvals:
+  required_for:
+    - post
+    - like
+    - comment
+    - follow
+    - unfollow
+    - retweet
+    - dm
+  approver: user
+  expiry_hours: 24
+  note: "Each acting operation needs its own explicit approval record."
+
+quiet_hours:
+  enabled: false
+  start: "22:00"
+  end: "08:00"
+  timezone: local
+  note: "When enabled, acting operations are refused during quiet hours."
+
+rate_limits:
+  default:
+    actions_per_hour: 10
+    actions_per_day: 50
+  tiktok:
+    actions_per_hour: 10
+    actions_per_day: 40
+  x:
+    actions_per_hour: 15
+    actions_per_day: 100
+  instagram:
+    actions_per_hour: 10
+    actions_per_day: 50
+  facebook:
+    actions_per_hour: 10
+    actions_per_day: 50
+  youtube:
+    actions_per_hour: 10
+    actions_per_day: 50
+  reddit:
+    actions_per_hour: 20
+    actions_per_day: 100
+
+watchers:
+  poll_interval_seconds: 300
+  max_events_per_poll: 50
+  note: "Watchers are poll-based and read-only. They observe and propose; they never act."
+
+blocklists:
+  keywords:
+    - crypto giveaway
+    - double your money
+    - free followers
+  users: []
+  note: "Events matching blocklist entries are flagged, never auto-acted on."
+
+prohibited:
+  - mass_follow_unfollow
+  - comment_spam
+  - astroturfing
+  - credential_storage
+  - bypassing_rate_limits
+  - acting_without_approval
