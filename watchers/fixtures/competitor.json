@@ -1,0 +1,28 @@
+{
+  "items": [
+    {
+      "id": "c1",
+      "competitor": "rival_a",
+      "followers": 120000,
+      "follower_delta": 2500,
+      "posts_last_7d": 9,
+      "avg_engagement": 4.2,
+      "themes": [
+        "ai video",
+        "tutorials",
+        "bts"
+      ]
+    },
+    {
+      "id": "c2",
+      "competitor": "rival_b",
+      "followers": 80000,
+      "follower_delta": -300,
+      "posts_last_7d": 3,
+      "avg_engagement": 2.1,
+      "themes": [
+        "vlogs"
+      ]
+    }
+  ]
+}

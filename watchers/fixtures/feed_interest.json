@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "id": "fi1",
+      "author": "creator_x",
+      "text": "New AI video workflow just dropped #aivideo",
+      "hashtags": [
+        "aivideo"
+      ],
+      "likes": 500,
+      "comments": 40
+    },
+    {
+      "id": "fi2",
+      "author": "dancer_y",
+      "text": "POV: your cat pays rent",
+      "likes": 5,
+      "comments": 0
+    },
+    {
+      "id": "fi3",
+      "author": "random_z",
+      "text": "Sora vs Veo ai video comparison, full breakdown",
+      "hashtags": [],
+      "likes": 300,
+      "comments": 25
+    },
+    {
+      "id": "fi4",
+      "author": "spammer",
+      "text": "crypto giveaway double your money",
+      "likes": 2,
+      "comments": 0
+    }
+  ]
+}

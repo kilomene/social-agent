@@ -20,7 +20,7 @@ def home(tmp_path, monkeypatch):
     return h
 
 
-def cli(*args, home=None, policy=None):
+def cli(*args, home=None, policy=None, missions=None):
     env = dict(os.environ)
     if home:
         env["SOCIAL_AGENT_HOME"] = home
@@ -28,6 +28,10 @@ def cli(*args, home=None, policy=None):
         env["SOCIAL_AGENT_POLICY"] = policy
     else:
         env.pop("SOCIAL_AGENT_POLICY", None)
+    if missions:
+        env["SOCIAL_AGENT_MISSIONS"] = missions
+    else:
+        env.pop("SOCIAL_AGENT_MISSIONS", None)
     return subprocess.run([sys.executable, CLI, *args],
                           capture_output=True, text=True, env=env)
 
@@ -54,6 +58,23 @@ def write_policy(path, **overrides):
         },
         "watchers": {"poll_interval_seconds": 300, "max_events_per_poll": 50},
         "blocklists": {"keywords": [], "users": []},
+        "interests": {
+            "enabled": True,
+            "topics": ["ai video", "sora"],
+            "hashtags": ["aivideo"],
+            "authors": [],
+            "quality_signals": {"min_likes": 50, "min_comments": 5},
+            "weights": {"topic": 2, "hashtag": 3, "author": 4,
+                        "quality_signal": 1},
+            "threshold": 5,
+        },
+        "engagement": {
+            "likes_per_hour": 20,
+            "likes_per_day": 100,
+            "follows_per_day": 30,
+            "like_author_cooldown_hours": 24,
+            "min_seconds_between_likes": 60,
+        },
         "prohibited": ["mass_follow_unfollow"],
     }
     for section, vals in overrides.items():

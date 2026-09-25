@@ -1,0 +1,35 @@
+# social-agent heartbeat config (parsed by policy/yaml_lite.py — block style only).
+#
+# Protocol-compatible with the heartbeat repo's CLI:
+#   ping <base>/<name>/start  ->  <base>/<name>  (or <base>/<name>/fail)
+# Leave base_url empty for log-only mode: pings are recorded to
+# $SOCIAL_AGENT_HOME/heartbeat.json with no network traffic.
+
+enabled: true
+base_url: ""
+timeout_seconds: 10
+
+supervisor:
+  enabled: true
+  interval_seconds: 10
+  name: social-agent-supervisor
+
+# Per-watcher overrides, keyed by watcher id:
+#   w-abc123:
+#     enabled: false
+#     url: https://monitor.example.com/push/watcher-specific
+watchers:
+  trend:
+    enabled: true
+  competitor:
+    enabled: true
+  sentiment:
+    enabled: true
+  mention:
+    enabled: true
+  velocity:
+    enabled: true
+  content-idea:
+    enabled: true
+  crisis:
+    enabled: true

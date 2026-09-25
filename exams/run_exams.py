@@ -25,6 +25,8 @@ def run(home, policy, *args):
     env = dict(os.environ, SOCIAL_AGENT_HOME=home)
     if policy:
         env["SOCIAL_AGENT_POLICY"] = policy
+    # isolate missions per exam so reruns never collide on mission names
+    env["SOCIAL_AGENT_MISSIONS"] = os.path.join(home, "missions")
     return subprocess.run([sys.executable, CLI, *args],
                           capture_output=True, text=True, env=env)
 
@@ -109,7 +111,8 @@ def exam_3_rate_limit_enforced():
     home = fresh_home()
     pol = write_policy(os.path.join(home, "policy.yaml"),
                        rate_limits={"tiktok": {"actions_per_hour": 2,
-                                              "actions_per_day": 2}})
+                                              "actions_per_day": 2}},
+                       engagement={"min_seconds_between_likes": 0})
     setup_account(home)
     ok1 = run(home, pol, "engage", "like", "--platform", "tiktok",
               "--account", "main", "--target", "v1").returncode == 0
@@ -188,6 +191,232 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_4_quiet_hours,
          exam_5_approval_lifecycle,
          exam_6_post_needs_approval]
+
+
+# ------------------------------------------------- new exams (upgrade) ---
+
+def exam_7_selective_engagement():
+    ex = Exam("exam-7", "Boring posts are NOT liked; interesting posts ARE (selective engagement)")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "feed_interest.json")
+    r = run(home, None, "watch", "start", "--type", "feed", "--platform", "tiktok",
+            "--account", "main", "--set", "use_interest_profile=true",
+            "--set", "propose_engage=true",
+            "--fixture", fx, "--id", "e7")
+    ex.check("interest-filtered feed watcher starts", r.returncode == 0, r.stderr.strip())
+    r = run(home, None, "watch", "run", "e7")
+    ex.check("only 2 interesting posts emit events", "2 new event(s)" in r.stdout, r.stdout.strip())
+    ex.check("boring/spam posts produce no proposals",
+             "dancer_y" not in r.stdout and "crypto_giveaway" not in r.stdout,
+             r.stdout.strip()[:300])
+    ex.check("interesting posts propose likes", r.stdout.count("proposes: like") == 2,
+             r.stdout.strip()[:300])
+    # direct engage like on a boring post is refused with a reason
+    r = run(home, None, "engage", "like", "--platform", "tiktok", "--account", "main",
+            "--target", "boring1", "--author", "dancer_y",
+            "--text", "POV: your cat pays rent", "--likes-count", "5")
+    ex.check("boring like refused (exit 2)",
+             r.returncode == 2 and "not interesting" in r.stderr, r.stderr.strip())
+    refusals = [json.loads(l) for l in open(os.path.join(home, "refusals.jsonl"))]
+    ex.check("refusal logged with reason", len(refusals) == 1 and "reason" in refusals[0],
+             str(refusals[0])[:120])
+    # interesting post like is proposed
+    r = run(home, None, "engage", "like", "--platform", "tiktok", "--account", "main",
+            "--target", "fi1", "--author", "creator_x",
+            "--text", "New AI video workflow just dropped #aivideo",
+            "--hashtags", "aivideo", "--likes-count", "500")
+    ex.check("interesting like proposed", r.returncode == 0 and "DRY-RUN" in r.stdout,
+             r.stderr.strip() or r.stdout.strip()[:120])
+    return ex
+
+
+def exam_8_like_spam_guards():
+    ex = Exam("exam-8", "Like spam blocked: daily cap + per-author cooldown")
+    home = fresh_home()
+    pol = write_policy(os.path.join(home, "policy.yaml"),
+                       engagement={"likes_per_day": 2, "likes_per_hour": 10,
+                                   "like_author_cooldown_hours": 24,
+                                   "min_seconds_between_likes": 0})
+    setup_account(home)
+    base = ["engage", "like", "--platform", "tiktok", "--account", "main"]
+    post = ["--text", "sora ai video tutorial", "--likes-count", "500"]
+    r1 = run(home, pol, *(base + ["--target", "v1", "--author", "author_a"] + post))
+    ex.check("first like ok", r1.returncode == 0, r1.stderr.strip())
+    r2 = run(home, pol, *(base + ["--target", "v2", "--author", "author_a"] + post))
+    ex.check("same author twice blocked by cooldown",
+             r2.returncode == 2 and "cooldown" in r2.stderr, r2.stderr.strip())
+    r3 = run(home, pol, *(base + ["--target", "v3", "--author", "author_b"] + post))
+    ex.check("second author ok (2/2 daily)", r3.returncode == 0, r3.stderr.strip())
+    r4 = run(home, pol, *(base + ["--target", "v4", "--author", "author_c"] + post))
+    ex.check("third like blocked by daily cap",
+             r4.returncode == 2 and "daily like cap" in r4.stderr, r4.stderr.strip())
+    return ex
+
+
+def exam_9_autonomous_in_scope():
+    ex = Exam("exam-9", "Autonomous post inside mission scope is auto-approved")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "mission", "create", "--name", "m9", "--platforms", "tiktok",
+        "--topics", "ai video,sora", "--actions", "post,like",
+        "--limit", "posts_per_day=2")
+    r = run(home, None, "autonomy", "grant", "--mission", "m9")
+    ex.check("grant without --confirm refused", r.returncode == 1, r.stderr.strip()[:80])
+    r = run(home, None, "autonomy", "grant", "--mission", "m9", "--confirm")
+    ex.check("grant with --confirm succeeds", r.returncode == 0 and "GRANTED" in r.stdout)
+    run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+        "--text", "sora ai video tutorial part 2", "--id", "ep9")
+    run(home, None, "post", "queue", "ep9")
+    r = run(home, None, "post", "approve", "ep9")
+    q = state(home, "queue.json")[0]
+    ex.check("in-scope post auto-approved", r.returncode == 0 and "AUTO-APPROVED" in r.stdout)
+    ex.check("auto_approved + mission recorded",
+             q.get("auto_approved") is True and q.get("mission") == "m9", str(q)[:150])
+    return ex
+
+
+def exam_10_scope_block():
+    ex = Exam("exam-10", "Actions outside mission scope are blocked and logged")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "mission", "create", "--name", "m10", "--platforms", "tiktok",
+        "--topics", "ai video", "--actions", "post,like")
+    run(home, None, "autonomy", "grant", "--mission", "m10", "--confirm")
+    r = run(home, None, "engage", "like", "--platform", "instagram",
+            "--account", "main", "--target", "v1")
+    ex.check("off-platform action blocked", r.returncode == 2 and "scope" in r.stderr,
+             r.stderr.strip())
+    run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+        "--text", "my cat pays rent", "--id", "ep10")
+    r = run(home, None, "post", "approve", "ep10")
+    ex.check("off-topic post blocked", r.returncode == 2 and "scope" in r.stderr,
+             r.stderr.strip())
+    refusals = [json.loads(l) for l in open(os.path.join(home, "refusals.jsonl"))]
+    ex.check("both blocks logged to refusals.jsonl", len(refusals) == 2,
+             f"{len(refusals)} logged")
+    return ex
+
+
+def exam_11_profile_always_needs_approval():
+    ex = Exam("exam-11", "Profile change blocked without approval even in autonomous mode")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "mission", "create", "--name", "m11", "--platforms", "tiktok",
+        "--topics", "ai video", "--actions", "post,like")
+    run(home, None, "autonomy", "grant", "--mission", "m11", "--confirm")
+    r = run(home, None, "profile", "update", "--account", "main",
+            "--display-name", "New Name")
+    pid = state(home, "profiles.json")["proposals"][0]["id"]
+    ex.check("update creates proposal (not auto-approved)",
+             r.returncode == 0 and
+             state(home, "profiles.json")["proposals"][0]["status"] == "proposed")
+    ex.check("no auto_approved flag on profile proposal",
+             state(home, "profiles.json")["proposals"][0].get("auto_approved") is not True)
+    r = run(home, None, "profile", "approve", pid)
+    ex.check("explicit profile approve works", r.returncode == 0 and "APPROVED" in r.stdout)
+    return ex
+
+
+def exam_12_heartbeat_protocol():
+    ex = Exam("exam-12", "Watcher runs emit start+success; failures emit /fail")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "notifications.json")
+    run(home, None, "watch", "start", "--type", "notification", "--platform", "tiktok",
+        "--account", "main", "--fixture", fx, "--id", "e12")
+    r = run(home, None, "watch", "run", "e12")
+    ex.check("good watcher polls ok", r.returncode == 0, r.stderr.strip())
+    hist = json.load(open(os.path.join(home, "heartbeat.json")))
+    paths = [h["path"] for h in hist if h["name"] == "e12"]
+    ex.check("start heartbeat recorded", any(p.endswith("/start") for p in paths), str(paths))
+    ex.check("success heartbeat recorded",
+             any(p == "e12" for p in paths), str(paths))
+    ex.check("no /fail for good run", not any(p.endswith("/fail") for p in paths))
+    # failing watcher: fixture that does not exist
+    run(home, None, "watch", "start", "--type", "notification", "--platform", "tiktok",
+        "--account", "main", "--fixture", "/nonexistent/fx.json", "--id", "e12bad")
+    r = run(home, None, "watch", "run", "e12bad")
+    ex.check("bad watcher run fails", r.returncode == 1, r.stderr.strip()[:100])
+    hist = json.load(open(os.path.join(home, "heartbeat.json")))
+    bad = [h["path"] for h in hist if h["name"] == "e12bad"]
+    ex.check("/fail heartbeat recorded for failing run",
+             any(p.endswith("/fail") for p in bad), str(bad))
+    return ex
+
+
+def exam_13_crisis_watcher():
+    ex = Exam("exam-13", "Crisis watcher fires an urgent event on a negative spike")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "crisis.json")
+    # stamp items into the detection window (fixture ships with fixed timestamps)
+    import datetime as _dt
+    items = json.load(open(fx))["items"]
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    for it in items:
+        it["timestamp"] = now
+    live_fx = os.path.join(home, "crisis_live.json")
+    json.dump({"items": items}, open(live_fx, "w"))
+    r = run(home, None, "watch", "start", "--type", "crisis", "--platform", "tiktok",
+            "--account", "main", "--set", "accounts=examuser",
+            "--fixture", live_fx, "--id", "e13")
+    ex.check("crisis watcher starts", r.returncode == 0, r.stderr.strip())
+    r = run(home, None, "watch", "run", "e13")
+    ex.check("spike detected", "1 new event(s)" in r.stdout, r.stdout.strip())
+    ex.check("event is urgent", "urgent" in r.stdout.lower(), r.stdout.strip()[:200])
+    return ex
+
+
+def exam_14_trend_interest_filter():
+    ex = Exam("exam-14", "Trend watcher filters out off-mission trends")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "trend.json")
+    r = run(home, None, "watch", "start", "--type", "trend", "--platform", "tiktok",
+            "--account", "main", "--set", "min_heat=60",
+            "--set", "use_interest_profile=true",
+            "--fixture", fx, "--id", "e14")
+    ex.check("trend watcher starts", r.returncode == 0, r.stderr.strip())
+    r = run(home, None, "watch", "run", "e14")
+    ex.check("off-mission #dancetrend filtered out", "#dancetrend" not in r.stdout,
+             r.stdout.strip()[:300])
+    ex.check("on-mission trends proposed", "proposes: post" in r.stdout,
+             r.stdout.strip()[:300])
+    return ex
+
+
+def exam_15_content_idea_aggregation():
+    ex = Exam("exam-15", "Content-idea watcher aggregates repeated audience questions")
+    home = fresh_home()
+    setup_account(home)
+    fx = os.path.join(FX, "content_idea.json")
+    r = run(home, None, "watch", "start", "--type", "content-idea", "--platform", "tiktok",
+            "--account", "main", "--fixture", fx, "--id", "e15")
+    ex.check("content-idea watcher starts", r.returncode == 0, r.stderr.strip())
+    r = run(home, None, "watch", "run", "e15")
+    ex.check("one aggregated idea event", "1 new event(s)" in r.stdout, r.stdout.strip())
+    ex.check("event names the repeated question",
+             "sora camera moves tutorial" in r.stdout.lower(), r.stdout.strip()[:200])
+    ex.check("proposes a post angle", "proposes: post" in r.stdout, r.stdout.strip()[:200])
+    return ex
+
+
+EXAMS = [exam_1_watcher_proposes_without_acting,
+         exam_2_engage_blocked_without_approval,
+         exam_3_rate_limit_enforced,
+         exam_4_quiet_hours,
+         exam_5_approval_lifecycle,
+         exam_6_post_needs_approval,
+         exam_7_selective_engagement,
+         exam_8_like_spam_guards,
+         exam_9_autonomous_in_scope,
+         exam_10_scope_block,
+         exam_11_profile_always_needs_approval,
+         exam_12_heartbeat_protocol,
+         exam_13_crisis_watcher,
+         exam_14_trend_interest_filter,
+         exam_15_content_idea_aggregation]
 
 
 def main():

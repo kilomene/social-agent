@@ -1,0 +1,41 @@
+{
+  "items": [
+    {
+      "id": "t1",
+      "topic": "#aivideo",
+      "heat": 92,
+      "delta": 30,
+      "examples": [
+        "sora v2 drops",
+        "veo camera moves"
+      ]
+    },
+    {
+      "id": "t2",
+      "topic": "#dancetrend",
+      "heat": 88,
+      "delta": 25,
+      "examples": [
+        "new shuffle"
+      ]
+    },
+    {
+      "id": "t3",
+      "topic": "#aivideo",
+      "heat": 40,
+      "delta": 5,
+      "examples": [
+        "old news"
+      ]
+    },
+    {
+      "id": "t4",
+      "hashtag": "#runway",
+      "heat": 75,
+      "delta": 12,
+      "examples": [
+        "gen-4 test"
+      ]
+    }
+  ]
+}

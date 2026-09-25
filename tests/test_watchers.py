@@ -20,9 +20,11 @@ def make(wtype, home, config=None, fixture=None):
     return cls("testw", "tiktok", "tester", config or {}, home, fixture)
 
 
-def test_all_seven_types_registered():
-    assert sorted(REGISTRY) == ["activity", "channel", "comment", "feed",
-                                "follow", "message", "notification"]
+def test_all_fourteen_types_registered():
+    assert sorted(REGISTRY) == ["activity", "channel", "comment", "competitor",
+                                "content-idea", "crisis", "feed", "follow",
+                                "mention", "message", "notification",
+                                "sentiment", "trend", "velocity"]
 
 
 def test_config_validation(tmp_path):

@@ -62,4 +62,50 @@ only acting pauses.
 - Every watcher poll appends structured events to `events.jsonl` in the state
   directory.
 - Every proposed/approved/completed action is recorded with timestamps.
+- Every policy refusal (rate limit, spam guard, scope block) is logged to
+  `refusals.jsonl` with a reason.
 - `analytics` summarizes this log; nothing is silently dropped.
+
+## 8. Selective engagement — like what's interesting, never spam
+
+- `engage like` scores the post against the `interests:` profile in
+  `policy.yaml` (topics, hashtags, author affinity, quality signals). Posts
+  scoring below `threshold` are **refused** with the score and reasons logged.
+- Anti-spam guards are enforced separately from the general rate limits:
+  per-platform hourly/daily like caps, a per-author cooldown (default 24h —
+  never like the same author twice inside it), a minimum gap between likes,
+  and a daily follow cap. See `engagement:` in `policy.yaml`.
+- The feed watcher (with `use_interest_profile=true`) and the follow watcher
+  (with `score_users=true`) only propose engagement for interesting posts and
+  users. Boring content is silently skipped — no event, no proposal.
+
+## 9. Autonomous mode — scoped, explicit, revocable
+
+- Autonomy is **off by default** and granted for exactly one mission:
+  `autonomy grant --mission <name> --confirm` (the `--confirm` flag is the
+  explicit user confirmation; without it the command only prints the scope).
+- A mission (`missions/<name>.md`) defines the area of work: platforms,
+  topics/content pillars, allowed actions, and hard daily limits.
+- In autonomous mode the agent may act **without per-action approval**, but
+  **only inside mission scope**. Anything outside scope — a different
+  platform, off-topic content, DMs — is **blocked and logged** to
+  `refusals.jsonl`.
+- Revoke anytime: `autonomy revoke`. Rate limits, quiet hours, spam guards,
+  and mission limits still apply in autonomous mode.
+
+## 10. Profile changes always need explicit approval — no exceptions
+
+- `profile update` creates a proposal; `profile approve` is the explicit
+  approval; `profile done` logs the browser-applied change.
+- **There is no code path that auto-approves profile changes** — not in
+  supervised mode, not in autonomous mode, not with any mission. The
+  `profile approve` command deliberately never consults the autonomy state.
+- Display name, username, bio, and avatar are all covered by this rule.
+
+## 11. Heartbeats
+
+- Every watcher run emits `<base>/<watcher-id>/start`, then success or
+  `/fail` (same protocol as the heartbeat repo). The supervisor daemon emits
+  its own heartbeat every 10s. See `docs/heartbeat-integration.md`.
+- With no `base_url` configured, heartbeats run in log-only mode: recorded to
+  `heartbeat.json`, zero network traffic.

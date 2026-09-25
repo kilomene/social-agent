@@ -1,0 +1,46 @@
+{
+  "items": [
+    {
+      "id": "k0",
+      "account": "examuser",
+      "author": "u0",
+      "text": "this is a scam, fake guru exposed",
+      "timestamp": "2026-09-24T23:00:00Z"
+    },
+    {
+      "id": "k1",
+      "account": "examuser",
+      "author": "u1",
+      "text": "terrible advice, boycott this account",
+      "timestamp": "2026-09-24T23:00:00Z"
+    },
+    {
+      "id": "k2",
+      "account": "examuser",
+      "author": "u2",
+      "text": "awful content, hate this trash",
+      "timestamp": "2026-09-24T23:00:00Z"
+    },
+    {
+      "id": "k3",
+      "account": "examuser",
+      "author": "u3",
+      "text": "fake fake fake, cancel incoming",
+      "timestamp": "2026-09-24T23:00:00Z"
+    },
+    {
+      "id": "k4",
+      "account": "examuser",
+      "author": "u4",
+      "text": "worst creator ever, horrible",
+      "timestamp": "2026-09-24T23:00:00Z"
+    },
+    {
+      "id": "k5",
+      "account": "examuser",
+      "author": "u5",
+      "text": "love the new video btw",
+      "timestamp": "2026-09-24T23:00:00Z"
+    }
+  ]
+}

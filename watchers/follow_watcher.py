@@ -1,4 +1,12 @@
-"""Follow watcher: tracks specific users, hashtags, keywords, or posts."""
+"""Follow watcher: tracks specific users, hashtags, keywords, or posts.
+
+With score_users=true, authors of matched activity are scored against the
+interest profile; with propose_follow=true, interesting authors get a
+proposed follow (supervised: still needs approval; autonomous missions may
+auto-approve within scope and the daily follow cap).
+"""
+
+from engagement.interest import load_profile, score_user
 
 from .framework import Watcher
 
@@ -8,7 +16,8 @@ class FollowWatcher(Watcher):
     description = "Watches specific users, hashtags, keywords, or posts for new activity."
     schema = {
         "required": ["targets"],
-        "optional": {"propose_engage": False},
+        "optional": {"propose_engage": False, "score_users": False,
+                     "propose_follow": False},
     }
 
     def _targets(self):
@@ -37,8 +46,22 @@ class FollowWatcher(Watcher):
                     break
             if not hit:
                 continue
+            cfg = self.effective_config()
             proposed = None
-            if self.effective_config()["propose_engage"]:
+            user_score = None
+            if cfg["score_users"]:
+                profile = load_profile()
+                user_score, reasons, interesting = score_user(
+                    {"username": it.get("author"),
+                     "bio": it.get("author_bio", "")}, profile)
+                if interesting and cfg["propose_follow"]:
+                    proposed = {
+                        "action": "follow",
+                        "target": it.get("author"),
+                        "note": (f"Proposed follow of interesting user @{it.get('author')} "
+                                 f"(score {user_score}) — requires approval."),
+                    }
+            if proposed is None and cfg["propose_engage"]:
                 proposed = {
                     "action": "like",
                     "target": it.get("id"),
@@ -49,8 +72,10 @@ class FollowWatcher(Watcher):
                     item_id=str(it.get("id")),
                     kind=f"follow:{hit[0]}",
                     summary=f"new activity for watched {hit[0]} '{hit[1]}': "
-                    f"{str(it.get('text') or it.get('title'))[:100]}",
-                    data={**it, "watched": {"kind": hit[0], "value": hit[1]}},
+                    f"{str(it.get('text') or it.get('title'))[:100]}"
+                    + (f" [user interest {user_score}]" if user_score is not None else ""),
+                    data={**it, "watched": {"kind": hit[0], "value": hit[1]},
+                          "user_interest_score": user_score},
                     proposed_action=proposed,
                 )
             )

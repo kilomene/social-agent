@@ -29,6 +29,10 @@ if REPO_ROOT not in sys.path:
 from policy import yaml_lite
 from platforms.base import get_adapter, SUPPORTED_PLATFORMS
 from watchers import REGISTRY, WatcherError
+from engagement import interest as interest_mod
+from heartbeat import pinger as hb
+import missions as missions_mod
+import autonomy as autonomy_mod
 
 VERSION = "0.1.0"
 
@@ -149,6 +153,86 @@ def guard_acting(platform, action):
 def approval_valid(action):
     age_h = (time.time() - action.get("approved_at_ts", 0)) / 3600.0
     return age_h <= get_policy()["approvals"]["expiry_hours"]
+
+
+def log_refusal(action, platform, target, reason):
+    """Append a refusal record (policy said no) to refusals.jsonl."""
+    p = _path("refusals.jsonl")
+    os.makedirs(home_dir(), exist_ok=True)
+    with open(p, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "timestamp": utcnow(), "action": action, "platform": platform,
+            "target": target, "reason": reason,
+        }) + "\n")
+
+
+def check_like_guards(platform, author):
+    """Anti-spam guards for likes: caps, per-author cooldown, min interval."""
+    eng = get_policy().get("engagement", {})
+    now = time.time()
+    likes = [l for l in load_json("likes.json", []) if l.get("platform") == platform]
+    day = [l for l in likes if now - l["ts"] < 86400]
+    hour = [l for l in day if now - l["ts"] < 3600]
+    cap_h, cap_d = eng.get("likes_per_hour", 20), eng.get("likes_per_day", 100)
+    if len(hour) >= cap_h:
+        raise Refused(f"like spam guard: {platform} hourly like cap ({cap_h}) reached")
+    if len(day) >= cap_d:
+        raise Refused(f"like spam guard: {platform} daily like cap ({cap_d}) reached")
+    if author:
+        cd = eng.get("like_author_cooldown_hours", 24) * 3600
+        seen = [l["ts"] for l in likes
+                if (l.get("author") or "").lower() == author.lower()]
+        if seen and now - max(seen) < cd:
+            wait_h = (cd - (now - max(seen))) / 3600
+            raise Refused(f"like spam guard: @{author} already liked recently "
+                          f"(cooldown {wait_h:.1f}h left)")
+    gap = eng.get("min_seconds_between_likes", 60)
+    if likes and now - max(l["ts"] for l in likes) < gap:
+        wait_s = int(gap - (now - max(l["ts"] for l in likes)))
+        raise Refused(f"like spam guard: liking too fast, wait {wait_s}s")
+
+
+def record_like(platform, author, target):
+    likes = load_json("likes.json", [])
+    likes.append({"ts": time.time(), "platform": platform,
+                  "author": (author or "").lower(), "target": target})
+    save_json("likes.json", likes)
+
+
+def check_follow_guards(platform):
+    eng = get_policy().get("engagement", {})
+    cap = eng.get("follows_per_day", 30)
+    now = time.time()
+    follows = [f for f in load_json("follows.json", [])
+               if f.get("platform") == platform and now - f["ts"] < 86400]
+    if len(follows) >= cap:
+        raise Refused(f"follow guard: {platform} daily follow cap ({cap}) reached")
+
+
+def record_follow(platform, target):
+    follows = load_json("follows.json", [])
+    follows.append({"ts": time.time(), "platform": platform, "target": target})
+    save_json("follows.json", follows)
+
+
+def autonomous_decision(platform, action, text=""):
+    """If autonomy is granted and the action is in mission scope, return the
+    mission name (auto-approval applies). If autonomy is granted but the
+    action is OUT of scope, raise Refused and log it. If autonomy is not
+    granted, return None (normal approval flow)."""
+    st = autonomy_mod.load_state()
+    if not st.get("granted"):
+        return None
+    allowed, reason = autonomy_mod.check_scope(platform, action, text)
+    if not allowed:
+        log_refusal(action, platform, "", f"autonomous scope: {reason}")
+        raise Refused(f"autonomous scope block: {reason}")
+    try:
+        autonomy_mod.check_mission_limit(action)
+    except RuntimeError as e:
+        log_refusal(action, platform, "", str(e))
+        raise Refused(str(e))
+    return st.get("mission")
 
 
 # -------------------------------------------------------------- helpers ---
@@ -292,9 +376,10 @@ def cmd_watch(args):
         cls = REGISTRY[rec["type"]]
         w = cls(rec["id"], rec["platform"], rec["account"], rec["config"],
                 home_dir(), rec.get("fixture"))
+        hb_cfg = hb.load_config()
         try:
-            events = w.check()
-        except WatcherError as e:
+            events = hb.watch_run(hb_cfg, rec["id"], w.check)
+        except (WatcherError, OSError) as e:
             raise UsageError(str(e))
         print(f"poll ok: {len(events)} new event(s)")
         for ev in events:
@@ -351,11 +436,18 @@ def cmd_post(args):
             if q["status"] not in ("draft", "queued"):
                 raise UsageError(f"post {args.id} is {q['status']}")
             guard_acting(q["platform"], "post")
+            mission = autonomous_decision(q["platform"], "post", q.get("text", ""))
             q["status"] = "approved"
             q["approved_at"] = utcnow()
             q["approved_at_ts"] = time.time()
+            q["auto_approved"] = bool(mission)
+            q["mission"] = mission
             record_action(q["platform"])
-            print(f"post {args.id} APPROVED for {q['platform']}/{q['account']}")
+            if mission:
+                print(f"post {args.id} AUTO-APPROVED under mission {mission!r} "
+                      f"for {q['platform']}/{q['account']}")
+            else:
+                print(f"post {args.id} APPROVED for {q['platform']}/{q['account']}")
             print("DRY-RUN: publish this in a real browser session; the CLI never posts by itself.")
         save_json("queue.json", queue)
 
@@ -365,26 +457,78 @@ def cmd_post(args):
 ENGAGE_ACTIONS = ["like", "comment", "follow", "retweet"]
 
 
+def _post_info_from_args(args):
+    """Build a post dict from engage args for interest scoring. Returns None
+    when no post details were supplied (unscored like)."""
+    info = {}
+    if args.author:
+        info["author"] = args.author
+    if args.text and args.op == "like":
+        info["text"] = args.text
+    if args.hashtags:
+        info["hashtags"] = [h.strip().lstrip("#") for h in args.hashtags.split(",") if h.strip()]
+    if args.likes_count is not None:
+        info["likes"] = args.likes_count
+    if args.comments_count is not None:
+        info["comments"] = args.comments_count
+    return info or None
+
+
 def cmd_engage(args):
     actions = load_json("actions.json", [])
     if args.op in ENGAGE_ACTIONS:
         check_platform(args.platform)
         acct = resolve_account(args.account)
-        if args.op in ("comment",) and not args.text:
+        if args.op == "comment" and not args.text:
             raise UsageError("comment requires --text")
         guard_acting(args.platform, args.op)
+
+        # --- selective engagement: likes only for interesting posts ---
+        text_for_scope = args.text or ""
+        if args.op == "like":
+            post = _post_info_from_args(args)
+            if post is not None:
+                score, reasons, interesting = interest_mod.score_post(post)
+                if not interesting:
+                    reason = (f"not interesting (score {score} < "
+                              f"threshold {interest_mod.load_profile().get('threshold')})")
+                    log_refusal("like", args.platform, args.target, reason)
+                    raise Refused(f"selective engagement: {reason}: {'; '.join(reasons)}")
+                print(f"interest score {score}: {'; '.join(reasons[:3])}")
+            check_like_guards(args.platform, args.author or "")
+        if args.op == "follow":
+            check_follow_guards(args.platform)
+
+        # --- autonomous mode: auto-approve in scope, block out of scope ---
+        mission = autonomous_decision(args.platform, args.op, text_for_scope)
+        if mission:
+            status, auto = "approved", True
+        else:
+            status, auto = "proposed", False
+
         aid = new_id("a")
         actions.append({
             "id": aid, "action": args.op, "platform": args.platform,
             "account": acct["username"], "target": args.target,
-            "text": args.text or "", "status": "proposed",
+            "text": args.text or "", "status": status,
+            "auto_approved": auto, "mission": mission,
             "dry_run": True, "created": utcnow(),
+            **({"approved_at": utcnow(), "approved_at_ts": time.time()} if auto else {}),
         })
         record_action(args.platform)
+        if args.op == "like":
+            record_like(args.platform, args.author or "", args.target)
+        if args.op == "follow":
+            record_follow(args.platform, args.target)
         save_json("actions.json", actions)
-        print(f"DRY-RUN proposal {aid}: {args.op} -> {args.target} "
-              f"[{args.platform}/{acct['username']}]")
-        print("No action was taken. Run `engage approve` to approve it explicitly.")
+        if auto:
+            print(f"AUTO-APPROVED {aid} under mission {mission!r}: "
+                  f"{args.op} -> {args.target} [{args.platform}/{acct['username']}]")
+            print("DRY-RUN: perform it in a real browser session, then `engage done`.")
+        else:
+            print(f"DRY-RUN proposal {aid}: {args.op} -> {args.target} "
+                  f"[{args.platform}/{acct['username']}]")
+            print("No action was taken. Run `engage approve` to approve it explicitly.")
     elif args.op == "list":
         items = actions
         if args.status:
@@ -506,6 +650,243 @@ def cmd_analytics(args):
           ", ".join(f"{k}={v}" for k, v in sorted(by_status.items())))
 
 
+# ---------------------------------------------------------------- mission ---
+
+def cmd_mission(args):
+    if args.op == "create":
+        platforms = [p.strip() for p in args.platforms.split(",") if p.strip()]
+        for p in platforms:
+            check_platform(p)
+        topics = [t.strip() for t in (args.topics or "").split(",") if t.strip()]
+        actions = [a.strip() for a in args.actions.split(",") if a.strip()]
+        limits = parse_kv(args.limit)
+        path = missions_mod.create_mission(args.name, platforms, topics, actions,
+                                           limits, args.brief or "")
+        print(f"mission {args.name!r} created at {path}")
+        print(f"  platforms: {', '.join(platforms)}")
+        print(f"  topics: {', '.join(topics) or '-'}")
+        print(f"  allowed actions: {', '.join(actions)}")
+        print("Note: a mission alone grants nothing. Use `autonomy grant` to activate it.")
+    elif args.op == "list":
+        ms = missions_mod.list_missions()
+        if not ms:
+            print("no missions defined")
+            return
+        for m in ms:
+            print(f"{m['name']}: platforms=[{', '.join(m['platforms'])}] "
+                  f"actions=[{', '.join(m['allowed_actions'])}]")
+    elif args.op == "show":
+        p = missions_mod.mission_path(args.name)
+        if not os.path.exists(p):
+            raise UsageError(f"unknown mission {args.name!r}")
+        meta, body = missions_mod.parse_mission_file(p)
+        print(f"name: {meta['name']}")
+        print(f"platforms: {', '.join(meta['platforms'])}")
+        print(f"topics: {', '.join(meta.get('topics') or [])}")
+        print(f"allowed actions: {', '.join(meta['allowed_actions'])}")
+        print(f"limits: {meta.get('limits') or {}}")
+        print("---")
+        print(body.strip())
+
+
+# --------------------------------------------------------------- autonomy ---
+
+def cmd_autonomy(args):
+    if args.op == "grant":
+        meta = missions_mod.get_mission(args.mission)
+        if meta is None:
+            raise UsageError(f"unknown mission {args.mission!r}; see `mission list`")
+        if not args.confirm:
+            print("AUTONOMY GRANT — review the scope before confirming:")
+            print(f"  mission: {meta['name']}")
+            print(f"  platforms: {', '.join(meta['platforms'])}")
+            print(f"  topics: {', '.join(meta.get('topics') or [])}")
+            print(f"  allowed actions: {', '.join(meta['allowed_actions'])}")
+            print(f"  limits: {meta.get('limits') or {}}")
+            print("  HARD BLOCKS (never auto-approved): profile changes, DMs, "
+                  "off-mission platforms/topics.")
+            print()
+            print("To grant, re-run with --confirm. You can revoke anytime with "
+                  "`autonomy revoke`.")
+            raise UsageError("grant requires --confirm (explicit user confirmation)")
+        granted = autonomy_mod.grant(args.mission)
+        print(f"autonomy GRANTED for mission {granted['name']!r} at {utcnow()}")
+        print("The agent may now act without per-action approval INSIDE mission scope only.")
+    elif args.op == "revoke":
+        autonomy_mod.revoke()
+        print("autonomy revoked. All acting operations need per-action approval again.")
+    elif args.op == "status":
+        st = autonomy_mod.load_state()
+        if not st.get("granted"):
+            print("autonomy: not granted")
+            return
+        m = autonomy_mod.active_mission()
+        print(f"autonomy: GRANTED for mission {st.get('mission')!r} "
+              f"since {st.get('granted_at')}")
+        if m:
+            print(f"  platforms: {', '.join(m['platforms'])}; "
+                  f"actions: {', '.join(m['allowed_actions'])}")
+
+
+# ---------------------------------------------------------------- profile ---
+
+PROFILE_FIELDS = ["display_name", "username", "bio", "avatar"]
+
+
+def _profiles():
+    return load_json("profiles.json", {"accounts": {}, "proposals": []})
+
+
+def cmd_profile(args):
+    data = _profiles()
+    if args.op == "view":
+        acct = resolve_account(args.account)
+        prof = data["accounts"].get(acct["username"], {})
+        print(f"account : {acct['username']} [{acct['platform']}]")
+        for f in PROFILE_FIELDS:
+            print(f"{f:13}: {prof.get(f, '-')}")
+        pending = [p for p in data["proposals"]
+                   if p["account"] == acct["username"] and p["status"] == "proposed"]
+        if pending:
+            print(f"pending proposals: {', '.join(p['id'] for p in pending)}")
+    elif args.op == "update":
+        acct = resolve_account(args.account)
+        changes = {}
+        if args.display_name is not None:
+            changes["display_name"] = args.display_name
+        if args.username is not None:
+            changes["username"] = args.username
+        if args.bio is not None:
+            changes["bio"] = args.bio
+        if args.avatar is not None:
+            changes["avatar"] = args.avatar
+        if not changes:
+            raise UsageError("nothing to change; pass --display-name/--username/--bio/--avatar")
+        pid = new_id("pr")
+        data["proposals"].append({
+            "id": pid, "account": acct["username"], "platform": acct["platform"],
+            "changes": changes, "status": "proposed",
+            "dry_run": True, "created": utcnow(),
+        })
+        save_json("profiles.json", data)
+        print(f"profile change {pid} PROPOSED for {acct['username']}: {changes}")
+        print("HARD RULE: profile changes ALWAYS need an explicit `profile approve` —")
+        print("autonomous mode can never auto-approve them.")
+    elif args.op == "list":
+        items = data["proposals"]
+        if args.status:
+            items = [p for p in items if p["status"] == args.status]
+        if not items:
+            print("no profile proposals")
+            return
+        for p in items:
+            print(f"{p['id']} [{p['status']}] {p['account']}: {p['changes']}")
+    elif args.op == "approve":
+        p = next((x for x in data["proposals"] if x["id"] == args.id), None)
+        if not p:
+            raise UsageError(f"unknown profile proposal {args.id!r}")
+        if p["status"] != "proposed":
+            raise UsageError(f"proposal {args.id} is {p['status']}, not proposed")
+        # NOTE: autonomy is deliberately NOT consulted here. This command IS the
+        # explicit user approval, and there is no code path that auto-approves
+        # profile changes.
+        guard_acting(p["platform"], "profile")
+        p["status"] = "approved"
+        p["approved_at"] = utcnow()
+        p["approved_at_ts"] = time.time()
+        record_action(p["platform"])
+        save_json("profiles.json", data)
+        print(f"profile change {args.id} APPROVED for {p['account']}")
+        print("Apply it in a real browser session, then log it with `profile done`.")
+    elif args.op == "done":
+        p = next((x for x in data["proposals"] if x["id"] == args.id), None)
+        if not p:
+            raise UsageError(f"unknown profile proposal {args.id!r}")
+        if p["status"] != "approved":
+            raise UsageError(f"proposal {args.id} is {p['status']}; approve it first")
+        if not approval_valid(p):
+            p["status"] = "expired"
+            save_json("profiles.json", data)
+            raise Refused(f"approval for {args.id} expired; re-approve")
+        acct_rec = data["accounts"].setdefault(p["account"], {})
+        acct_rec.update(p["changes"])
+        p["status"] = "done"
+        p["result"] = args.result or "applied in browser session"
+        p["done_at"] = utcnow()
+        save_json("profiles.json", data)
+        print(f"profile change {args.id} logged as done: {p['result']}")
+
+
+# -------------------------------------------------------------- heartbeat ---
+
+def _watcher_state_last_poll(wid):
+    sp = _path(f"watchers/{wid}.json")
+    if not os.path.exists(sp):
+        return 0
+    try:
+        with open(sp, encoding="utf-8") as fh:
+            ts = json.load(fh).get("state", {}).get("last_poll")
+        if not ts:
+            return 0
+        return datetime.fromisoformat(ts).timestamp()
+    except (ValueError, OSError, KeyError):
+        return 0
+
+
+def cmd_heartbeat(args):
+    cfg = hb.load_config()
+    if args.op == "status":
+        print(f"heartbeat: {'enabled' if cfg.enabled else 'disabled'}")
+        print(f"base_url: {cfg.base_url or '(log-only mode — no URL configured)'}")
+        print(f"supervisor: every {cfg.supervisor_interval}s -> {cfg.supervisor_name}")
+        recent = hb.recent_pings(limit=10)
+        if not recent:
+            print("no pings recorded yet")
+            return
+        print("recent pings:")
+        for r in recent:
+            mark = "ok " if r["ok"] else "FAIL"
+            print(f"  [{mark}] {r['timestamp']} {r['name']} {r['path']} — {r['detail']}")
+    elif args.op == "test":
+        if not cfg.base_url:
+            print("log-only mode: no base_url configured, pings are recorded locally.")
+            print(f"recorded pings: {len(hb.recent_pings(limit=1000))}")
+            return
+        ok, detail = hb.ping(cfg.base_url, timeout=cfg.timeout, name="heartbeat-test")
+        print(f"ping {cfg.base_url}: {'OK' if ok else 'FAILED'} — {detail}")
+        if not ok:
+            raise UsageError("heartbeat test ping failed")
+    elif args.op == "daemon":
+        interval = args.interval or cfg.supervisor_interval
+        only = [w.strip() for w in args.watchers.split(",")] if args.watchers else None
+        poll_interval = get_policy()["watchers"]["poll_interval_seconds"]
+        tick = 0
+        while True:
+            tick += 1
+            if cfg.enabled and cfg.supervisor_enabled:
+                hb.ping_path(cfg.base_url, cfg.supervisor_name, timeout=cfg.timeout)
+            registry = load_json("watchers.json", {})
+            for wid in sorted(registry):
+                rec = registry[wid]
+                if only and wid not in only:
+                    continue
+                if not rec.get("enabled"):
+                    continue
+                if time.time() - _watcher_state_last_poll(wid) < poll_interval:
+                    continue
+                cls = REGISTRY[rec["type"]]
+                w = cls(rec["id"], rec["platform"], rec["account"], rec["config"],
+                        home_dir(), rec.get("fixture"))
+                try:
+                    hb.watch_run(cfg, rec["id"], w.check)
+                    print(f"[tick {tick}] watcher {wid}: poll ok")
+                except Exception as e:
+                    print(f"[tick {tick}] watcher {wid}: FAILED ({e})")
+            if args.once:
+                break
+            time.sleep(interval)
+
+
 # ----------------------------------------------------------------- doctor ---
 
 def cmd_doctor(args):
@@ -540,6 +921,18 @@ def cmd_doctor(args):
     nfx = len([f for f in os.listdir(fx) if f.endswith(".json")]) if os.path.isdir(fx) else 0
     check("sample fixtures", nfx > 0, f"{nfx} fixture files")
     check("credentials stored in repo", False, "good: none (by design)")
+    try:
+        import missions as _m  # noqa: F401
+        check("missions module", True, _m.missions_dir())
+    except Exception as e:
+        check("missions module", False, str(e))
+    try:
+        from heartbeat import pinger as _hb
+        hcfg = _hb.load_config()
+        check("heartbeat config", True,
+              f"enabled={hcfg.enabled} base_url={'set' if hcfg.base_url else 'log-only'}")
+    except Exception as e:
+        check("heartbeat config", False, str(e))
 
     failed = 0
     for name, ok, detail in checks:
@@ -621,7 +1014,12 @@ def build_parser():
         p.add_argument("--platform", required=True)
         p.add_argument("--account", required=True)
         p.add_argument("--target", required=True, help="post/user/message id or URL")
-        p.add_argument("--text", default="", help="comment/DM text (required for comment)")
+        p.add_argument("--text", default="", help="comment text (required for comment); "
+                                                 "for like: the post's text (for interest scoring)")
+        p.add_argument("--author", default="", help="post author's handle (like: cooldown + scoring)")
+        p.add_argument("--hashtags", default="", help="comma-separated post hashtags (like: scoring)")
+        p.add_argument("--likes-count", type=int, default=None, help="post like count (scoring)")
+        p.add_argument("--comments-count", type=int, default=None, help="post comment count (scoring)")
     p = e_sub.add_parser("approve", help="approve a proposed action")
     p.add_argument("id")
     p = e_sub.add_parser("done", help="log an approved action as performed")
@@ -630,6 +1028,59 @@ def build_parser():
     p = e_sub.add_parser("list", help="list engagement actions")
     p.add_argument("--status", default=None)
     e.set_defaults(func=cmd_engage)
+
+    m = sub.add_parser("mission", help="define an area of work for autonomous mode")
+    m_sub = m.add_subparsers(dest="op", required=True)
+    p = m_sub.add_parser("create", help="create a mission file")
+    p.add_argument("--name", required=True)
+    p.add_argument("--platforms", required=True, help="comma-separated")
+    p.add_argument("--topics", default="", help="comma-separated content pillars")
+    p.add_argument("--actions", required=True, help="comma-separated allowed actions")
+    p.add_argument("--limit", action="append", default=[], help="limit key=value (repeatable)")
+    p.add_argument("--brief", default="", help="free-text mission brief")
+    m_sub.add_parser("list", help="list missions")
+    p = m_sub.add_parser("show", help="show a mission")
+    p.add_argument("name")
+    m.set_defaults(func=cmd_mission)
+
+    au = sub.add_parser("autonomy", help="grant/revoke scoped autonomous mode")
+    au_sub = au.add_subparsers(dest="op", required=True)
+    p = au_sub.add_parser("grant", help="grant autonomy for a mission (needs --confirm)")
+    p.add_argument("--mission", required=True)
+    p.add_argument("--confirm", action="store_true",
+                   help="explicit user confirmation after reviewing scope")
+    au_sub.add_parser("revoke", help="revoke autonomy immediately")
+    au_sub.add_parser("status", help="show autonomy state")
+    au.set_defaults(func=cmd_autonomy)
+
+    pr = sub.add_parser("profile", help="view/propose profile changes (approval always required)")
+    pr_sub = pr.add_subparsers(dest="op", required=True)
+    p = pr_sub.add_parser("view", help="view stored profile")
+    p.add_argument("--account", required=True)
+    p = pr_sub.add_parser("update", help="propose a profile change (never auto-approved)")
+    p.add_argument("--account", required=True)
+    p.add_argument("--display-name", default=None)
+    p.add_argument("--username", default=None)
+    p.add_argument("--bio", default=None)
+    p.add_argument("--avatar", default=None, help="local path/URL of new avatar image")
+    p = pr_sub.add_parser("approve", help="explicitly approve a profile change")
+    p.add_argument("id")
+    p = pr_sub.add_parser("done", help="log an approved profile change as applied")
+    p.add_argument("id")
+    p.add_argument("--result", default="")
+    p = pr_sub.add_parser("list", help="list profile proposals")
+    p.add_argument("--status", default=None)
+    pr.set_defaults(func=cmd_profile)
+
+    hb_p = sub.add_parser("heartbeat", help="heartbeat monitoring (protocol-compatible)")
+    hb_sub = hb_p.add_subparsers(dest="op", required=True)
+    hb_sub.add_parser("status", help="show heartbeat config + recent pings")
+    hb_sub.add_parser("test", help="test-ping the configured base URL")
+    p = hb_sub.add_parser("daemon", help="supervisor loop: heartbeat + due watcher polls")
+    p.add_argument("--interval", type=int, default=None, help="seconds between ticks")
+    p.add_argument("--once", action="store_true", help="single tick then exit")
+    p.add_argument("--watchers", default="", help="comma-separated watcher ids (default: all due)")
+    hb_p.set_defaults(func=cmd_heartbeat)
 
     r = sub.add_parser("research", help="build a cross-platform topic research plan")
     r.add_argument("topic")

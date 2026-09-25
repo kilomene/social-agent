@@ -19,9 +19,42 @@ approvals:
     - unfollow
     - retweet
     - dm
+    - profile
   approver: user
   expiry_hours: 24
-  note: "Each acting operation needs its own explicit approval record."
+  note: "Each acting operation needs its own explicit approval record. Profile changes ALWAYS need explicit approval, even in autonomous mode — there is no code path that auto-approves them."
+
+# Selective engagement: what counts as "interesting" enough to like/follow.
+interests:
+  enabled: true
+  topics:
+    - ai video
+    - sora
+    - veo
+    - runway
+  hashtags:
+    - aivideo
+    - generativeart
+  authors: []
+  quality_signals:
+    min_likes: 50
+    min_comments: 5
+  weights:
+    topic: 2
+    hashtag: 3
+    author: 4
+    quality_signal: 1
+  threshold: 5
+  note: "A post is interesting when its score >= threshold. Likes are only proposed/approved for interesting posts when post details are supplied."
+
+# Anti-spam / anti-abuse guards for engagement.
+engagement:
+  likes_per_hour: 20
+  likes_per_day: 100
+  follows_per_day: 30
+  like_author_cooldown_hours: 24
+  min_seconds_between_likes: 60
+  note: "Separate from rate_limits (which cap all actions). Refused likes/follows are logged to refusals.jsonl with a reason."
 
 quiet_hours:
   enabled: false
@@ -73,3 +106,7 @@ prohibited:
   - credential_storage
   - bypassing_rate_limits
   - acting_without_approval
+  - profile_change_without_explicit_approval
+
+autonomy:
+  note: "Autonomous mode is granted per-mission (`autonomy grant --mission <name> --confirm`) and revocable (`autonomy revoke`). Inside mission scope the agent may act without per-action approval; outside scope actions are blocked and logged to refusals.jsonl. Profile changes and DMs can never be auto-approved."

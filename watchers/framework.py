@@ -23,6 +23,25 @@ def utcnow():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def as_list(value):
+    """Normalize a list config that may arrive as a bare string via CLI --set."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith("["):
+            try:
+                import json
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return parsed
+            except ValueError:
+                pass
+        # comma-separated or single bare value
+        return [v.strip() for v in value.split(",") if v.strip()]
+    return list(value)
+
+
 class WatcherError(Exception):
     pass
 
