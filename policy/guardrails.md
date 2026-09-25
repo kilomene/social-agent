@@ -247,3 +247,46 @@ only acting pauses.
 - The YouTube quality checklist (`youtube preflight`) accepts an optional
   `--video --placement long-form|shorts` that delegates to the spec
   preflight — packaging rules and file rules are checked together.
+
+## 20. AI Video Editor Worker: the edit bench is safe by construction
+
+- **Posting stays approval-gated.** Everything in `editor/` produces media
+  for a draft; nothing in the edit bench can publish. A finished render
+  still goes through `post draft` → approval → `post done` like anything
+  else. No autonomous grant can override this.
+- **Never overwrite inputs.** Every editor op writes to `--output`; the
+  input file is never mutated in place. Ops refuse input==output (the same
+  rule as `video`/`audio`).
+- **Show the exact command first.** Every op that runs ffmpeg prints the
+  full `RUN: ffmpeg ...` line before executing, and every op supports
+  `--dry-run` (prints commands, writes nothing). A render that wasn't
+  previewed is a render that shouldn't run.
+- **Watch before cutting.** `editor watch` is the mandatory first pass:
+  duration, scene cuts, silence spans, speech ratio, energy curve, and a
+  full transcript slot land in `analysis.json`. `highlights` then ranks
+  from data (energy + cut density + transcript), not vibes — and the
+  `--note` on a cut explains why it was proposed.
+- **Grades are honest about what they do.** 7 grades in
+  `editor/grading.py` (teal-noir, neon-city, teal-street, warm-vintage,
+  noir, blockbuster, clean). `clean` is a first-class option: passthrough
+  with no effect. The three signature looks match the reference stills in
+  `video/looks/` (palettes sampled 2026-09-25); the look of an edit must
+  always trace back to a grade name in the render log, never "I fixed the
+  colors".
+- **Kdenlive is primary, Shotcut is fallback.** Project files are authored
+  as real `.kdenlive`/`.mlt` XML (verified without the GUI installed);
+  unknown effects are refused rather than silently dropped, and
+  `render_headless` uses `melt` when present. When melt/kdenlive/shotcut
+  are absent the bench says so plainly and degrades (XML authoring,
+  transcript+heuristic fallback for whisper, deshake fallback for
+  vidstab) — it never pretends a render happened.
+- **Crash recovery.** The render queue (`editor queue`) persists jobs on
+  disk: interrupted renders resume (`--resume`), done jobs are skipped,
+  failed jobs retry up to their budget and then fail loudly. QA
+  (`editor qa`) verifies every render (black/frozen frames, A/V sync,
+  decode health, subtitle legibility, missing media) and auto re-renders
+  once before giving up.
+- **Consistent branding.** `editor brand` kits carry colors, logo,
+  watermark position, and the grade. Brand kits stamp the render — the
+  account's look is a file in the repo, not a memory of what looked good
+  last time.

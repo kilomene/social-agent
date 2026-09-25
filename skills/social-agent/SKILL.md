@@ -142,6 +142,23 @@ audience questions → video ideas) `crisis` (negative-spike urgent alerts)
   the music bed under voiceover via sidechain compression; loudness presets
   per platform. Music must come from licensed libraries or your own audio
   (`audio/MUSIC.md`). Guardrails §18.
+- `editor` — the AI Video Editor Worker (see `editor/WORKFLOW.md`): `watch`
+  (mandatory first pass: scenes, silence, speech, energy, transcript) →
+  `highlights` (data-ranked selects, sliding windows + non-max suppression)
+  → `grade` (7 cinematic grades incl. teal-noir/neon-city/teal-street matched
+  to the reference stills in `video/looks/`; `clean` = no effect) →
+  `transcribe` (whisper or transcript+heuristic) → `captions` (burn-in styles,
+  karaoke ASS) → `broll-plan`/`broll-apply` (PiP/cutaway over dead air) →
+  `project` (real Kdenlive `.kdenlive` / Shotcut `.mlt` XML for GUI polish;
+  docs in `editor/KDENLIVE.md`, `editor/SHOTCUT.md`) → `motion` (lower thirds,
+  text cards, intro/outro, emoji captions) → `brand` (kits: colors, logo,
+  watermark, grade) → `batch` (multi-file ops) → `queue` (persistent render
+  queue with `--resume` crash recovery) → `qa` (black/freeze/desync/decode/
+  subtitle checks + one auto re-render) → `thumb` (contrast-checked branded
+  thumbnails) → `export` (480p→8K, h264/hevc/av1, hw encoders auto-detected)
+  → `camera` (stabilize/denoise/white-balance) → `compress` (CRF ladders +
+  2-pass). Every op prints its exact ffmpeg command (`--dry-run` anywhere),
+  never overwrites inputs, and posting stays approval-gated. Guardrails §20.
 
 ## Environment overrides (for tests)
 

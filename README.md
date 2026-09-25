@@ -143,6 +143,27 @@ social-agent audio normalize --input final.mp3 --output loud.mp3 --preset tiktok
 # smart aspect-ratio fitting — the agent knows every platform's video spec
 # (video/specs.yaml, checked 2026-09-25; human-readable video/SPECS.md).
 # Default is NEVER destructive: pad (blurred fill) keeps 100% of the frame.
+
+# AI Video Editor Worker — the full edit bench (see editor/WORKFLOW.md)
+social-agent editor watch --input raw.mp4 --out work/          # mandatory first pass
+social-agent editor highlights --dir work/ --top 5             # data-ranked selects
+social-agent editor grade apply --input raw.mp4 --output g.mp4 --look teal-noir
+social-agent editor transcribe --input raw.mp4 --dir work/      # whisper or heuristic
+social-agent editor captions --input g.mp4 --srt work/captions.srt --style pop \
+    --output captioned.mp4
+social-agent editor broll-plan --dir work/ --broll cutaway.mp4 --out work/broll.json
+social-agent editor project --kind kdenlive --title ep1 \
+    --spec '{"assets":["captioned.mp4"],"clips":[{"asset":"captioned.mp4"}]}' \
+    --out ep1.kdenlive                                         # open in Kdenlive GUI
+social-agent editor brand create --label main                  # colors/logo/grade kit
+social-agent editor brand apply --input captioned.mp4 --output branded.mp4 --label main
+social-agent editor batch --op grade --look neon-city --in "raw/*.mp4" --out graded/
+social-agent editor queue add --name ep1 --cmd "ffmpeg -y -i branded.mp4 ep1.mp4"
+social-agent editor queue run --resume                         # crash recovery
+social-agent editor qa --input ep1.mp4                         # verifies the render
+social-agent editor thumb --input ep1.mp4 --text "Hook text" --output thumb.jpg
+social-agent editor export --input ep1.mp4 --output master.mp4 --resolution 4k --codec hevc
+social-agent editor motion lower-third --text "Nova" --output lt.png
 social-agent video fit --input cut.mp4 --output short.mp4 --for tiktok
 social-agent video fit --input wide.mp4 --output short.mp4 --for youtube:shorts --dry-run
 # crop-to-fill ONLY with an explicit focus point (--focus center|top|bottom|face);

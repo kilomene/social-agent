@@ -8,6 +8,7 @@ Appends: exams/RESULTS.md (one section per run; history is preserved)
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -854,6 +855,162 @@ def exam_33_audio_clip_fades_args():
 
 
 
+def exam_40_grade_teal_noir_filtergraph():
+    ex = Exam("exam-40", "teal-noir grade emits the reference-look filtergraph")
+    home = fresh_home()
+    r = run(home, None, "editor", "grade", "list")
+    ex.check("grade list exits 0", r.returncode == 0, r.stderr[:120])
+    ex.check("teal-noir listed", "teal-noir" in r.stdout, r.stdout[:200])
+    ex.check("clean (no effect) listed", "clean" in r.stdout, r.stdout[:200])
+    r2 = run(home, None, "editor", "grade", "apply", "--input", "in.mp4",
+             "--output", "out.mp4", "--look", "teal-noir", "--dry-run")
+    ex.check("dry-run prints filtergraph with colorbalance",
+             "colorbalance" in r2.stdout, r2.stdout[:200])
+    ex.check("teal shadows encoded (rs=-0.25, bs=0.25)",
+             "rs=-0.25" in r2.stdout and "bs=0.25" in r2.stdout,
+             r2.stdout[:300])
+    r3 = run(home, None, "editor", "grade", "apply", "--input", "in.mp4",
+             "--output", "out.mp4", "--look", "no-such-grade", "--dry-run")
+    ex.check("unknown grade refused", r3.returncode != 0, r3.stderr[:160])
+    return ex
+
+
+def _exam_loud_fixture(home):
+    import shutil
+    mp4 = os.path.join(home, "loud.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                    "-i", "testsrc=duration=10:size=640x480:rate=30",
+                    "-filter_complex",
+                    "sine=frequency=440:duration=10,volume=0.15,atrim=0:4,"
+                    "asetpts=PTS-STARTPTS[q1];"
+                    "sine=frequency=880:duration=10,volume=1.2,atrim=0:3,"
+                    "asetpts=PTS-STARTPTS[l1];"
+                    "sine=frequency=440:duration=10,volume=0.15,atrim=0:3,"
+                    "asetpts=PTS-STARTPTS[q2];"
+                    "[q1][l1][q2]concat=n=3:v=0:a=1[a]",
+                    "-map", "0:v", "-map", "[a]", "-c:v", "libx264",
+                    "-c:a", "aac", mp4], check=True)
+    return mp4
+
+
+def exam_41_watch_highlights_loudest_segment():
+    import shutil
+    ex = Exam("exam-41", "watch->highlights finds the loudest segment")
+    home = fresh_home()
+    if not shutil.which("ffmpeg"):
+        ex.check("ffmpeg missing (env without it)", True)
+        return ex
+    mp4 = _exam_loud_fixture(home)
+    work = os.path.join(home, "work")
+    r = run(home, None, "editor", "watch", "--input", mp4, "--out", work)
+    ex.check("watch exits 0", r.returncode == 0, r.stderr[:160])
+    ex.check("analysis.json written",
+             os.path.exists(os.path.join(work, "analysis.json")))
+    r2 = run(home, None, "editor", "highlights", "--dir", work, "--top", "3")
+    ex.check("highlights exits 0", r2.returncode == 0, r2.stderr[:160])
+    # loud burst is at 4-7s; top highlight must cover it
+    m = re.search(r"1\. ([\d.]+)s->([\d.]+)s", r2.stdout)
+    covers = m and float(m.group(1)) <= 4.0 <= float(m.group(2))
+    ex.check("top highlight covers the 4-7s loud burst", bool(covers),
+             r2.stdout[:200])
+    return ex
+
+
+def exam_42_qa_flags_black_frames():
+    import shutil
+    ex = Exam("exam-42", "QA flags black frames in a synthetic fixture")
+    home = fresh_home()
+    if not shutil.which("ffmpeg"):
+        ex.check("ffmpeg missing (env without it)", True)
+        return ex
+    mp4 = os.path.join(home, "black.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                    "-i", "color=black:duration=2:size=320x240:rate=15",
+                    "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=15",
+                    "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+                    "-map", "[v]", "-c:v", "libx264", mp4], check=True)
+    r = run(home, None, "editor", "qa", "--input", mp4)
+    ex.check("qa exits nonzero on black frames", r.returncode != 0,
+             r.stdout[:160])
+    ex.check("black segment reported", "black" in r.stdout.lower(),
+             r.stdout[:200])
+    return ex
+
+
+def exam_43_batch_grades_three_fixtures():
+    import shutil
+    ex = Exam("exam-43", "batch applies a grade to 3 fixtures")
+    home = fresh_home()
+    if not shutil.which("ffmpeg"):
+        ex.check("ffmpeg missing (env without it)", True)
+        return ex
+    srcs = []
+    for i in range(3):
+        p = os.path.join(home, f"b{i}.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+                        "-i", "testsrc=duration=2:size=320x240:rate=15",
+                        "-c:v", "libx264", p], check=True)
+        srcs.append(p)
+    out = os.path.join(home, "batchout")
+    r = run(home, None, "editor", "batch", "--op", "grade", "--look", "noir",
+            "--in", os.path.join(home, "b*.mp4"), "--out", out)
+    ex.check("batch exits 0", r.returncode == 0, r.stderr[:160])
+    ex.check("3 outputs produced", "ok: 3, failed: 0" in r.stdout,
+             r.stdout[:200])
+    outs = sorted(f for f in os.listdir(out) if f.endswith(".mp4"))
+    ex.check("3 graded files on disk", len(outs) == 3, str(outs))
+    return ex
+
+
+def exam_44_queue_add_run_resume():
+    ex = Exam("exam-44", "render queue add/run/resume lifecycle")
+    home = fresh_home()
+    r = run(home, None, "editor", "queue", "add", "--name", "q1",
+            "--cmd", "echo hello")
+    ex.check("queue add exits 0", r.returncode == 0, r.stderr[:120])
+    r2 = run(home, None, "editor", "queue", "run", "--name", "q1")
+    ex.check("queue run executes", r2.returncode == 0 and "q1: done" in r2.stdout,
+             r2.stdout[:160])
+    r3 = run(home, None, "editor", "queue", "run", "--resume")
+    ex.check("resume skips the done job",
+             "already done" in r3.stdout, r3.stdout[:160])
+    r4 = run(home, None, "editor", "queue", "list")
+    ex.check("queue list shows job state", "q1" in r4.stdout and "done" in r4.stdout,
+             r4.stdout[:160])
+    return ex
+
+
+def exam_45_brand_apply_stamps_kit():
+    import shutil
+    ex = Exam("exam-45", "brand apply stamps kit grade + logo into the render")
+    home = fresh_home()
+    r = run(home, None, "editor", "brand", "create", "--label", "ch1")
+    ex.check("brand create exits 0", r.returncode == 0, r.stderr[:120])
+    r2 = run(home, None, "editor", "brand", "show", "--label", "ch1")
+    ex.check("kit defaults to teal-noir grade", "teal-noir" in r2.stdout,
+             r2.stdout[:200])
+    # stamp a REAL logo file into the kit (missing files are skipped by design)
+    logo = os.path.join(home, "logo.png")
+    try:
+        from PIL import Image
+        Image.new("RGBA", (80, 80), (0, 200, 255, 255)).save(logo)
+        have_logo = True
+    except ImportError:
+        have_logo = False
+    kitp = os.path.join(home, "branding", "ch1.yaml")
+    with open(kitp, "a", encoding="utf-8") as fh:
+        fh.write(f'logo: "{logo}"\n')
+    r3 = run(home, None, "editor", "brand", "apply", "--label", "ch1",
+             "--input", "in.mp4", "--output", "out.mp4", "--dry-run")
+    ex.check("dry-run prints the ffmpeg command", "RUN: ffmpeg" in r3.stdout,
+             r3.stdout[:160])
+    ex.check("grade filtergraph in command", "colorbalance" in r3.stdout,
+             r3.stdout[:200])
+    ex.check("logo path stamped into command",
+             have_logo and logo in r3.stdout, r3.stdout[:200])
+    return ex
+
+
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
          exam_3_rate_limit_enforced,
@@ -892,7 +1049,13 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_36_crop_refused_without_focus,
          exam_37_crop_focus_top_box_math,
          exam_38_preflight_fails_wrong_aspect,
-         exam_39_preflight_passes_correct_video]
+         exam_39_preflight_passes_correct_video,
+         exam_40_grade_teal_noir_filtergraph,
+         exam_41_watch_highlights_loudest_segment,
+         exam_42_qa_flags_black_frames,
+         exam_43_batch_grades_three_fixtures,
+         exam_44_queue_add_run_resume,
+         exam_45_brand_apply_stamps_kit]
 
 
 def main():

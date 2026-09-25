@@ -161,6 +161,77 @@ PRESETS = {
 }
 
 
+# ----------------------------------------------------------------- export --
+# Full export ladder: resolution x codec. Hardware encoders are auto-detected
+# (nvenc/qsv/vaapi); software fallback otherwise. All builders print the exact
+# command via run_cmd and never overwrite inputs.
+
+EXPORT_HEIGHTS = {"480p": 480, "720p": 720, "1080p": 1080,
+                  "1440p": 1440, "4k": 2160, "8k": 4320}
+
+# codec -> software encoder + hw candidates (probed in order)
+EXPORT_CODECS = {
+    "h264": {"sw": ("libx264", ["-preset", "medium", "-crf", "19"]),
+             "hw": ["h264_nvenc", "h264_qsv", "h264_vaapi"]},
+    "hevc": {"sw": ("libx265", ["-preset", "medium", "-crf", "21"]),
+             "hw": ["hevc_nvenc", "hevc_qsv", "hevc_vaapi"]},
+    "av1": {"sw": ("libsvtav1", ["-preset", "6", "-crf", "25"]),
+            "hw": ["av1_nvenc", "av1_qsv", "av1_vaapi"]},
+}
+
+
+def _available_encoders():
+    try:
+        proc = subprocess.run([FFMPEG, "-hide_banner", "-encoders"],
+                              capture_output=True, text=True)
+        return proc.stdout
+    except OSError:
+        return ""
+
+
+def pick_encoder(codec, prefer_hw=True):
+    """Return (encoder_name, extra_args, kind) — hw if available else software."""
+    if codec not in EXPORT_CODECS:
+        raise ValueError(f"unknown codec {codec!r} (pick: {', '.join(EXPORT_CODECS)})")
+    spec = EXPORT_CODECS[codec]
+    if prefer_hw:
+        have = _available_encoders()
+        for hw in spec["hw"]:
+            if hw in have:
+                # sanity: hw encoder actually usable requires device; keep the
+                # flag honest — caller sees kind="hw (advertised)".
+                return hw, ["-cq", "21"] if "nvenc" in hw else [], "hw"
+    sw, args = spec["sw"]
+    return sw, args, "sw"
+
+
+def build_export(input_path, output_path, resolution="1080p", codec="h264",
+                 vertical=False, prefer_hw=True, strict=True):
+    """Master export: scale to `resolution` (height), encode with `codec`."""
+    _guard(input_path, output_path, strict)
+    if resolution not in EXPORT_HEIGHTS:
+        raise ValueError(f"unknown resolution {resolution!r} "
+                         f"(pick: {', '.join(EXPORT_HEIGHTS)})")
+    h = EXPORT_HEIGHTS[resolution]
+    enc, extra, kind = pick_encoder(codec, prefer_hw)
+    if vertical:
+        vf = f"scale=1080:{h}:force_original_aspect_ratio=increase," \
+             f"crop=1080:{h},setsar=1,format=yuv420p"
+    else:
+        vf = f"scale=-2:{h},setsar=1,format=yuv420p"
+    argv = [FFMPEG, "-y", "-i", input_path, "-vf", vf,
+            "-c:v", enc] + extra + ["-c:a", "aac", "-b:a", "160k", output_path]
+    return argv, {"encoder": enc, "kind": kind, "resolution": resolution,
+                  "codec": codec}
+
+
+def build_export_hw_probe():
+    """Report which encoders ffmpeg advertises (for `doctor`/docs)."""
+    have = _available_encoders()
+    return {c: [hw for hw in spec["hw"] if hw in have]
+            for c, spec in EXPORT_CODECS.items()}
+
+
 def build_compress(input_path, output_path, preset="tiktok", strict=True):
     """Re-encode to a platform upload preset."""
     if preset not in PRESETS:

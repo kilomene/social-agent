@@ -49,6 +49,20 @@ from video import ffmpeg as vff
 from video import plans as vplans
 from video import fit as vfit
 from audio import clips as audio_mod
+from editor import analyze as ed_analyze
+from editor import kdenlive as ed_kdenlive
+from editor import shotcut as ed_shotcut
+from editor import grading as ed_grading
+from editor import subtitles as ed_subs
+from editor import highlights as ed_hl
+from editor import broll as ed_broll
+from editor import motion as ed_motion
+from editor import branding as ed_brand
+from editor import batch as ed_batch
+from editor import qa as ed_qa
+from editor import thumbnails as ed_thumb
+from editor import camera as ed_camera
+from editor import compress as ed_compress
 
 VERSION = "0.1.0"
 
@@ -1478,6 +1492,16 @@ def cmd_video(args):
                         strict=not dry), dry_run=dry)
         if not dry:
             print(f"compressed [{args.preset}] -> {args.output}")
+    elif args.op == "export":
+        _require_ffmpeg()
+        argv, meta = vff.build_export(args.input, args.output,
+                                      resolution=args.resolution,
+                                      codec=args.codec,
+                                      vertical=args.vertical, strict=not dry)
+        print(f"encoder: {meta['encoder']} ({meta['kind']})")
+        vff.run_cmd(argv, dry_run=dry)
+        if not dry:
+            print(f"exported [{meta['resolution']}/{meta['codec']}] -> {args.output}")
     elif args.op == "plan":
         if args.pop == "create":
             steps = json.loads(args.steps)
@@ -1536,8 +1560,275 @@ def cmd_audio(args):
             print(f"normalized [{args.preset}] -> {args.output}")
 
 
+# ---------------------------------------------------------------- editor ---
+
+def _ed_dry(args):
+    return bool(getattr(args, "dry_run", False))
+
+
+def cmd_editor(args):
+    dry = _ed_dry(args)
+    op = args.eop
+    if op == "watch":
+        _require_ffmpeg()
+        a = ed_analyze.watch(args.input, out_dir=args.out)
+        print(f"duration : {a['duration']}s  {a['width']}x{a['height']}@{a['fps']}")
+        print(f"scenes   : {a['scene_count']} cuts")
+        print(f"speech   : {a['speech_ratio']*100:.0f}% of audio")
+        print(f"analysis -> {os.path.join(args.out, 'analysis.json')}")
+    elif op == "highlights":
+        a = ed_analyze.load(args.dir)
+        hl = ed_hl.find_highlights(a, top_n=args.top)
+        ed_hl.save_highlights(hl, os.path.join(args.dir, "highlights.json"))
+        for i, h in enumerate(hl, 1):
+            print(f"{i}. {h['start']}s->{h['end']}s score={h['score']} ({h['reason']})")
+        if args.make:
+            _require_ffmpeg()
+            outs = ed_hl.make_clips(a["input"], hl,
+                                    os.path.join(args.dir, "clips"), dry_run=dry)
+            print(f"{len(outs)} clip(s) -> {os.path.join(args.dir, 'clips')}")
+    elif op == "grade":
+        if args.gop == "list":
+            for name, desc in ed_grading.list_grades().items():
+                print(f"{name:12s} {desc}")
+        else:
+            _require_ffmpeg()
+            filt = ed_grading.filtergraph(args.look)
+            print(f"look: {args.look} — {ed_grading.describe(args.look)}")
+            argv = [vff.FFMPEG, "-y", "-i", args.input, "-vf", filt,
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "19",
+                    "-c:a", "aac", args.output]
+            vff._guard(args.input, args.output, not dry)
+            vff.run_cmd(argv, dry_run=dry)
+            if not dry:
+                print(f"graded [{args.look}] -> {args.output}")
+    elif op == "transcribe":
+        _require_ffmpeg()
+        if ed_subs.whisper_available():
+            print("whisper is installed — run it directly for best results, e.g.:")
+            print(f"  whisper {args.input} --model base --output_dir {args.dir}")
+        a = ed_analyze.load(args.dir) if os.path.isdir(args.dir) else None
+        silence = (a or {}).get("silence_spans", [])
+        dur = (a or {}).get("duration") or vff.info(args.input)["duration"]
+        out = os.path.join(args.dir, "captions.srt")
+        os.makedirs(args.dir, exist_ok=True)
+        ed_subs.heuristic_srt(args.transcript, dur, silence, out)
+        cues = ed_subs.parse_srt(out)
+        print(f"heuristic SRT: {len(cues)} cues -> {out}")
+        print("note: timing heuristic (even word distribution over speech); "
+              "install whisper for real transcription")
+    elif op == "captions":
+        _require_ffmpeg()
+        argv = ed_subs.build_burn_in(args.input, args.output, args.srt,
+                                     args.style, strict=not dry)
+        vff.run_cmd(argv, dry_run=dry)
+        if not dry:
+            print(f"captions [{args.style}] burned -> {args.output}")
+    elif op == "broll-plan":
+        a = ed_analyze.load(args.dir)
+        files = [p.strip() for p in (args.broll or "").split(",") if p.strip()]
+        plan = ed_broll.plan(a, files, mode=args.mode,
+                             position=args.position)
+        ed_broll.save_plan(plan, args.out)
+        print(f"{len(plan['items'])} insert(s) planned -> {args.out}")
+        for it in plan["items"]:
+            print(f"  {it['at']}s +{it['duration']}s [{it['mode']}] {it['file']}")
+    elif op == "broll-apply":
+        _require_ffmpeg()
+        with open(args.plan, encoding="utf-8") as fh:
+            plan = json.load(fh)
+        if args.mode == "pip":
+            argv = ed_broll.build_apply_pip(args.input, args.output, plan,
+                                            strict=not dry)
+            vff.run_cmd(argv, dry_run=dry)
+            if not dry:
+                print(f"b-roll applied -> {args.output}")
+        else:
+            seq = ed_broll.build_apply_cutaway(args.input, args.output, plan)
+            print(json.dumps(seq, indent=2))
+            print("cutaway plan above — cut segments with `video clip`, then concat")
+    elif op == "project":
+        if args.editor_kind == "kdenlive":
+            proj = ed_kdenlive.Project(title=args.title, profile=args.profile)
+        else:
+            proj = ed_shotcut.Project(title=args.title)
+        spec = json.loads(args.spec)
+        amap = {}
+        for path in spec.get("assets", []):
+            amap[path] = proj.add_asset(path)
+        for c in spec.get("clips", []):
+            aid = amap.get(c["asset"]) or proj.add_asset(c["asset"])
+            amap[c["asset"]] = aid
+            cid = proj.add_clip(aid, track=c.get("track", "v1"),
+                                in_s=c.get("in", 0), out_s=c.get("out"))
+            for fx in c.get("effects", []):
+                if hasattr(proj, "add_effect"):
+                    proj.add_effect(cid, fx if isinstance(fx, str) else fx["name"],
+                                    fx.get("params") if isinstance(fx, dict) else None)
+        for m in spec.get("markers", []):
+            if hasattr(proj, "add_marker"):
+                proj.add_marker(m.get("time", 0), m.get("comment", ""))
+        missing = proj.missing_media()
+        if missing:
+            print(f"warning: {len(missing)} missing media file(s):")
+            for m_ in missing[:5]:
+                print(f"  ! {m_}")
+        proj.save(args.out)
+        print(f"{args.editor_kind} project -> {args.out} "
+              f"({len(proj.assets)} assets, {len(proj.timeline)} clips)")
+        if not ed_kdenlive.Project.kdenlive_available() and args.editor_kind == "kdenlive":
+            print("note: kdenlive GUI not installed here — open the .kdenlive "
+                  "file in Kdenlive (see editor/KDENLIVE.md)")
+    elif op == "brand":
+        if args.bop == "create":
+            p = ed_brand.create(home_dir(), args.label)
+            print(f"brand kit -> {p} (edit colors/logo/grade to taste)")
+        elif args.bop == "list":
+            kits = ed_brand.list_kits(home_dir())
+            print("no kits" if not kits else "\n".join(kits))
+        elif args.bop == "show":
+            print(ed_brand._dump_yaml(ed_brand.load(home_dir(), args.label)))
+        elif args.bop == "apply":
+            _require_ffmpeg()
+            kit = ed_brand.load(home_dir(), args.label)
+            argv = ed_brand.build_apply(args.input, args.output, kit,
+                                        strict=not dry)
+            vff.run_cmd(argv, dry_run=dry)
+            if not dry:
+                print(f"brand [{args.label}] applied -> {args.output}")
+    elif op == "batch":
+        _require_ffmpeg()
+        kw = {}
+        if args.op_ == "grade":
+            kw["look"] = args.look
+        elif args.op_ == "compress":
+            kw["preset"] = args.preset
+        elif args.op_ == "captions":
+            kw.update(srt=args.srt, style=args.style)
+        elif args.op_ == "brand":
+            kw["kit"] = ed_brand.load(home_dir(), args.kit)
+        res = ed_batch.run_batch(home_dir(), args.op_,
+                                 [args.in_], args.out, dry_run=dry, **kw)
+        print(f"ok: {len(res['ok'])}, failed: {len(res['failed'])}")
+        for f in res["failed"]:
+            print(f"  FAIL {f['src']}: {f['error']}")
+    elif op == "queue":
+        if args.qop == "add":
+            r = ed_batch.queue_add(home_dir(), args.name, args.cmd.split(),
+                                   at=args.at)
+            print(f"queued {r['job']}" + (f" @ {r['at']}" if r["at"] else ""))
+            if r.get("note"):
+                print("note:", r["note"])
+        elif args.qop == "list":
+            jobs = ed_batch.queue_list(home_dir())
+            if not jobs:
+                print("queue empty")
+            for j in jobs:
+                print(f"{j['name']:20s} {j['state']:12s} attempts={j['attempts']}")
+        elif args.qop == "run":
+            for r in ed_batch.queue_run(home_dir(), name=args.name,
+                                        resume=args.resume, dry_run=dry):
+                print(f"{r['job']}: {r['state']}"
+                      + (f" ({r['error']})" if r.get("error") else "")
+                      + (f" — {r['note']}" if r.get("note") else ""))
+    elif op == "qa":
+        _require_ffmpeg()
+        res = ed_qa.verify(args.input, srt_path=args.srt)
+        print("PASS" if res["passed"] else "FAIL")
+        for i in res["issues"]:
+            print(f"  ! {i}")
+        if not res["passed"]:
+            sys.exit(2)
+    elif op == "thumb":
+        _require_ffmpeg()
+        brand = ed_brand.load(home_dir(), args.brand) if args.brand else None
+        res = ed_thumb.make(args.input, args.output, at=args.at,
+                            text=args.text or "", brand=brand, dry_run=dry)
+        print(f"thumbnail -> {res['path']}")
+        if res.get("contrast"):
+            print(f"text contrast ratio: {res['contrast']['ratio']} "
+                  f"({'ok' if res['contrast']['ok'] else 'low — scrim applied'})")
+    elif op == "camera":
+        _require_ffmpeg()
+        if args.cop == "stabilize":
+            passes = ed_camera.build_stabilize(args.input, args.output,
+                                               strict=not dry)
+            for p_ in passes:
+                argv = p_["argv"] if isinstance(p_, dict) else p_
+                if isinstance(p_, dict):
+                    print("note:", p_["fallback"])
+                vff.run_cmd(argv, dry_run=dry)
+            if not dry:
+                print(f"stabilized -> {args.output}")
+        else:
+            argv = ed_camera.build_enhance(
+                args.input, args.output, denoise=args.denoise,
+                temp=args.temp, brightness=args.brightness,
+                contrast=args.contrast, deflicker=args.deflicker,
+                strict=not dry)
+            vff.run_cmd(argv, dry_run=dry)
+            if not dry:
+                print(f"enhanced -> {args.output}")
+    elif op == "compress":
+        _require_ffmpeg()
+        if args.xop == "crf":
+            argv = ed_compress.build_crf(args.input, args.output,
+                                         codec=args.codec, quality=args.quality,
+                                         strict=not dry)
+            vff.run_cmd(argv, dry_run=dry)
+            if not dry:
+                print(f"compressed [{args.codec}/{args.quality}] -> {args.output}")
+        else:
+            passes = ed_compress.build_twopass(args.input, args.output,
+                                               args.target_mb, codec=args.codec,
+                                               strict=not dry)
+            for p_ in passes:
+                vff.run_cmd(p_, dry_run=dry)
+            if not dry:
+                print(f"2-pass -> {args.output} (~{args.target_mb}MB target)")
+    elif op == "export":
+        _require_ffmpeg()
+        argv, meta = vff.build_export(args.input, args.output,
+                                      resolution=args.resolution,
+                                      codec=args.codec,
+                                      vertical=args.vertical, strict=not dry)
+        print(f"encoder: {meta['encoder']} ({meta['kind']})")
+        vff.run_cmd(argv, dry_run=dry)
+        if not dry:
+            print(f"exported [{meta['resolution']}/{meta['codec']}] -> {args.output}")
+    elif op == "motion":
+        if args.mop == "lower-third":
+            p_ = ed_motion.lower_third(args.text, subtext=args.subtext or "",
+                                       output=args.output)
+            print(f"lower third -> {p_}")
+        elif args.mop == "card":
+            p_ = ed_motion.text_card(args.text, output=args.output)
+            print(f"title card -> {p_}")
+        elif args.mop == "intro-outro":
+            kit = ed_brand.load(home_dir(), args.brand)
+            outs = ed_motion.intro_outro(
+                {"name": kit.get("name", ""), "colors":
+                 {k: tuple(v) for k, v in kit.get("colors", {}).items()},
+                 "intro_text": kit.get("intro_text", ""),
+                 "outro_text": kit.get("outro_text", "")},
+                args.out)
+            for name, o in outs.items():
+                print(f"{name}: card -> {o['png']}")
+                print(f"  render with: {' '.join(o['argv'][:6])} ... "
+                      f"(full cmd via --dry-run on export)")
+    else:
+        raise UsageError(f"unknown editor op {op!r}")
+
+
 def cmd_doctor(args):
     checks = []
+
+    def _ed_pil():
+        try:
+            import PIL  # noqa: F401
+            return True
+        except ImportError:
+            return False
 
     def check(name, ok, detail=""):
         checks.append((name, ok, detail))
@@ -1597,12 +1888,34 @@ def cmd_doctor(args):
                           ("video.ffmpeg", "video command builders"),
                           ("video.plans", "video edit plans"),
                           ("video.fit", "smart aspect-ratio fitter"),
-                          ("audio.clips", "audio clipping/mixing")):
+                          ("audio.clips", "audio clipping/mixing"),
+                          ("editor.grading", "cinematic grades"),
+                          ("editor.kdenlive", "Kdenlive project model"),
+                          ("editor.shotcut", "Shotcut project model"),
+                          ("editor.subtitles", "subtitles/captions"),
+                          ("editor.highlights", "highlight detection"),
+                          ("editor.broll", "b-roll planner"),
+                          ("editor.motion", "motion graphics"),
+                          ("editor.branding", "brand kits"),
+                          ("editor.batch", "batch + render queue"),
+                          ("editor.qa", "quality assurance"),
+                          ("editor.thumbnails", "thumbnails"),
+                          ("editor.camera", "camera enhancements"),
+                          ("editor.compress", "compression ladders")):
         try:
             __import__(modname)
             check(f"module: {desc}", True)
         except Exception as e:
             check(f"module: {desc}", False, str(e))
+    import shutil as _shutil
+    check("PIL (motion graphics/thumbnails)", _ed_pil(), "available" if _ed_pil() else "pip install pillow")
+    # optional tooling: informational only, never fail the doctor
+    check("melt (headless render, optional)", True,
+          _shutil.which("melt") or "not installed — GUI render instead (see editor/KDENLIVE.md)")
+    check("kdenlive GUI (optional)", True,
+          _shutil.which("kdenlive") or "not installed — projects still authored as XML")
+    check("whisper transcription (optional)", True,
+          "installed" if _shutil.which("whisper") else "not installed — transcript+heuristic fallback")
 
     failed = 0
     for name, ok, detail in checks:
@@ -1968,6 +2281,15 @@ def build_parser():
     p.add_argument("--output", required=True)
     p.add_argument("--preset", default="tiktok",
                    help="tiktok|reels|shorts|youtube")
+    p = vi_sub.add_parser("export", help="master export 480p..8k x h264/hevc/av1 (hw auto)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print ffmpeg commands without executing")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--resolution", default="1080p",
+                   help="480p|720p|1080p|1440p|4k|8k")
+    p.add_argument("--codec", default="h264", help="h264|hevc|av1")
+    p.add_argument("--vertical", action="store_true")
     p = vi_sub.add_parser("fit", help="smart aspect-ratio fit (pad by default, never blind-crops)")
     p.add_argument("--dry-run", action="store_true",
                    help="print plan + ffmpeg commands without executing")
@@ -2046,6 +2368,158 @@ def build_parser():
                    help="tiktok|youtube|podcast")
     au.set_defaults(func=cmd_audio)
 
+    ed = sub.add_parser("editor", help="AI Video Editor Worker: Kdenlive/Shotcut projects, grading, captions, QA, export")
+    ed.add_argument("--dry-run", action="store_true",
+                    help="print ffmpeg commands without executing")
+    ed_sub = ed.add_subparsers(dest="eop", required=True)
+
+    p = ed_sub.add_parser("watch", help="analyze a video -> analysis.json")
+    p.add_argument("--input", required=True)
+    p.add_argument("--out", required=True, help="work dir for analysis.json")
+
+    p = ed_sub.add_parser("highlights", help="rank highlight segments")
+    p.add_argument("--dir", required=True, help="work dir with analysis.json")
+    p.add_argument("--top", type=int, default=5)
+    p.add_argument("--make", action="store_true", help="cut highlight clips")
+
+    p = ed_sub.add_parser("grade", help="cinematic color grades")
+    g_sub = p.add_subparsers(dest="gop", required=True)
+    g_sub.add_parser("list", help="list grades")
+    p2 = g_sub.add_parser("apply", help="apply a grade")
+    p2.add_argument("--input", required=True)
+    p2.add_argument("--output", required=True)
+    p2.add_argument("--look", required=True,
+                    help="teal-noir|neon-city|teal-street|warm-vintage|noir|blockbuster|clean")
+
+    p = ed_sub.add_parser("transcribe", help="transcript -> timed SRT (heuristic if no whisper)")
+    p.add_argument("--input", required=True)
+    p.add_argument("--transcript", required=True, help="plain-text transcript file")
+    p.add_argument("--dir", required=True, help="work dir (uses analysis.json if present)")
+
+    p = ed_sub.add_parser("captions", help="burn styled captions into video")
+    p.add_argument("--input", required=True)
+    p.add_argument("--srt", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--style", default="pop", help="pop|karaoke|minimal")
+
+    p = ed_sub.add_parser("broll-plan", help="plan b-roll inserts from analysis")
+    p.add_argument("--dir", required=True)
+    p.add_argument("--broll", required=True, help="comma-separated b-roll files")
+    p.add_argument("--mode", default="pip", help="pip|cutaway")
+    p.add_argument("--position", default="bottom-right")
+    p.add_argument("--out", required=True, help="plan JSON path")
+
+    p = ed_sub.add_parser("broll-apply", help="apply a b-roll plan")
+    p.add_argument("--input", required=True)
+    p.add_argument("--plan", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--mode", default="pip", help="pip|cutaway")
+
+    p = ed_sub.add_parser("project", help="build a Kdenlive/Shotcut project from a JSON spec")
+    p.add_argument("--kind", dest="editor_kind", default="kdenlive",
+                   help="kdenlive|shotcut")
+    p.add_argument("--title", default="untitled")
+    p.add_argument("--profile", default="1080p30",
+                   help="1080p30|1080p60|4k30|vertical1080")
+    p.add_argument("--spec", required=True,
+                   help='JSON: {"assets":[...], "clips":[{"asset","track","in","out","effects":[]}], "markers":[]}')
+    p.add_argument("--out", required=True, help=".kdenlive or .mlt path")
+
+    p = ed_sub.add_parser("brand", help="brand kits for consistent identity")
+    b_sub = p.add_subparsers(dest="bop", required=True)
+    p2 = b_sub.add_parser("create", help="create a brand kit")
+    p2.add_argument("--label", default="default")
+    b_sub.add_parser("list", help="list kits")
+    p2 = b_sub.add_parser("show", help="show a kit")
+    p2.add_argument("--label", default="default")
+    p2 = b_sub.add_parser("apply", help="grade + watermark per kit")
+    p2.add_argument("--label", default="default")
+    p2.add_argument("--input", required=True)
+    p2.add_argument("--output", required=True)
+
+    p = ed_sub.add_parser("batch", help="apply one op across many files")
+    p.add_argument("--op-", dest="op_", required=True,
+                   help="grade|brand|captions|compress")
+    p.add_argument("--in", dest="in_", required=True, help="glob pattern")
+    p.add_argument("--out", required=True, help="output dir")
+    p.add_argument("--look", default="teal-noir")
+    p.add_argument("--preset", default="tiktok")
+    p.add_argument("--srt", default="")
+    p.add_argument("--style", default="pop")
+    p.add_argument("--kit", default="default")
+
+    p = ed_sub.add_parser("queue", help="render queue with crash recovery")
+    q_sub = p.add_subparsers(dest="qop", required=True)
+    p2 = q_sub.add_parser("add", help="queue a render command")
+    p2.add_argument("--name", required=True)
+    p2.add_argument("--cmd", required=True, help="exact shell-split command")
+    p2.add_argument("--at", default=None, help='schedule note, e.g. "02:00"')
+    q_sub.add_parser("list", help="list jobs")
+    p2 = q_sub.add_parser("run", help="execute queued jobs")
+    p2.add_argument("--name", default=None)
+    p2.add_argument("--resume", action="store_true",
+                    help="skip done jobs, retry failed within budget")
+
+    p = ed_sub.add_parser("qa", help="verify a render (black/freeze/desync/decode/subtitles)")
+    p.add_argument("--input", required=True)
+    p.add_argument("--srt", default=None)
+
+    p = ed_sub.add_parser("thumb", help="branded thumbnail with contrast check")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--at", type=float, default=3.0)
+    p.add_argument("--text", default="")
+    p.add_argument("--brand", default=None)
+
+    p = ed_sub.add_parser("camera", help="stabilize / denoise / white-balance")
+    c_sub = p.add_subparsers(dest="cop", required=True)
+    p2 = c_sub.add_parser("stabilize", help="2-pass vidstab (deshake fallback)")
+    p2.add_argument("--input", required=True)
+    p2.add_argument("--output", required=True)
+    p2 = c_sub.add_parser("enhance", help="denoise + WB + exposure recovery")
+    p2.add_argument("--input", required=True)
+    p2.add_argument("--output", required=True)
+    p2.add_argument("--denoise", default="medium")
+    p2.add_argument("--temp", default="neutral", help="cool|warm|neutral")
+    p2.add_argument("--brightness", type=float, default=0.0)
+    p2.add_argument("--contrast", type=float, default=1.0)
+    p2.add_argument("--deflicker", action="store_true")
+
+    p = ed_sub.add_parser("compress", help="CRF ladder or 2-pass size target")
+    x_sub = p.add_subparsers(dest="xop", required=True)
+    p2 = x_sub.add_parser("crf", help="single-pass CRF encode")
+    p2.add_argument("--input", required=True)
+    p2.add_argument("--output", required=True)
+    p2.add_argument("--codec", default="h264", help="h264|hevc|av1")
+    p2.add_argument("--quality", default="high", help="best|high|balanced|small")
+    p2 = x_sub.add_parser("twopass", help="2-pass encode to a size target")
+    p2.add_argument("--input", required=True)
+    p2.add_argument("--output", required=True)
+    p2.add_argument("--target-mb", type=float, required=True)
+    p2.add_argument("--codec", default="h264", help="h264|hevc|av1")
+
+    p = ed_sub.add_parser("export", help="master export 480p..8k x h264/hevc/av1 (hw auto)")
+    p.add_argument("--input", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--resolution", default="1080p",
+                   help="480p|720p|1080p|1440p|4k|8k")
+    p.add_argument("--codec", default="h264", help="h264|hevc|av1")
+    p.add_argument("--vertical", action="store_true")
+
+    p = ed_sub.add_parser("motion", help="motion graphics builders")
+    m_sub = p.add_subparsers(dest="mop", required=True)
+    p2 = m_sub.add_parser("lower-third", help="render a lower-third PNG")
+    p2.add_argument("--text", required=True)
+    p2.add_argument("--subtext", default="")
+    p2.add_argument("--output", required=True)
+    p2 = m_sub.add_parser("card", help="render a full-screen title card")
+    p2.add_argument("--text", required=True)
+    p2.add_argument("--output", required=True)
+    p2 = m_sub.add_parser("intro-outro", help="intro/outro cards from a brand kit")
+    p2.add_argument("--brand", default="default")
+    p2.add_argument("--out", required=True, help="output dir")
+    ed.set_defaults(func=cmd_editor)
+
     d = sub.add_parser("doctor", help="environment checks")
     d.set_defaults(func=cmd_doctor)
 
@@ -2053,7 +2527,16 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # `editor` accepts --dry-run anywhere in its argv (leaf parsers don't
+    # redeclare it, unlike video/audio): hoist it before parsing.
+    ed_dry = False
+    if raw[:1] == ["editor"] and "--dry-run" in raw:
+        raw = [a for a in raw if a != "--dry-run"]
+        ed_dry = True
+    args = build_parser().parse_args(raw)
+    if ed_dry:
+        args.dry_run = True
     try:
         args.func(args)
     except tos_mod.ToSRefusal as e:
