@@ -307,16 +307,22 @@ class DMAgent:
                             or (not m["ts"] and not last_in_ts))]
             inbound_new = [m for m in new if m["sender"] == "them"]
             # Duplicate guard: skip inbound already answered in-thread
-            # (a "me" message at/after it) or already queued for approval.
+            # (a "me" message at/after it), already queued for approval,
+            # or already decided (approved/rejected/done). A rejection is
+            # a decision: the same message is never re-proposed, so the
+            # loop cannot re-queue every cycle what the operator refused.
             me_ts = [m["ts"] for m in msgs if m["sender"] == "me"]
-            pending_items = approvals_queue.list_items(self.home, "pending")
-            queued_ids = { (i.get("payload") or {}).get("in_reply_to")
-                           for i in pending_items
-                           if i.get("type") == "dm"
-                           and i.get("platform") == self.platform }
+            seen_ids = set()
+            for st in ("pending", "approved", "rejected", "done"):
+                for i in approvals_queue.list_items(self.home, st):
+                    if (i.get("type") == "dm"
+                            and i.get("platform") == self.platform):
+                        mid = (i.get("payload") or {}).get("in_reply_to")
+                        if mid:
+                            seen_ids.add(mid)
             todo = []
             for m in inbound_new:
-                if m["msg_id"] in queued_ids:
+                if m["msg_id"] in seen_ids:
                     continue
                 if any(ts and m["ts"] and ts >= m["ts"] for ts in me_ts):
                     continue

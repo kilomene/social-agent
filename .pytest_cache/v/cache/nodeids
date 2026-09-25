@@ -79,6 +79,7 @@
   "tests/test_dm_agents.py::test_replier_text_is_default_and_gated",
   "tests/test_dm_agents.py::test_report_advances_cursor_per_thread",
   "tests/test_dm_agents.py::test_report_fulfills_dm_check_ticket",
+  "tests/test_dm_agents.py::test_report_never_reproposes_decided_messages",
   "tests/test_dm_agents.py::test_stop_deactivates_with_reason",
   "tests/test_dm_agents.py::test_style_gate_banned_phrases_removed",
   "tests/test_dm_agents.py::test_style_gate_em_dash_split",

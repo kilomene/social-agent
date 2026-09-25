@@ -562,3 +562,38 @@ def test_dm_check_ticket_carries_no_credentials(home):
     assert not re.search(
         r"(password|passcode|api[_-]?key)\s*[:=]\s*['\"][^'\"]+['\"]",
         blob, re.I), "credential-like value in dm_check ticket"
+
+
+def test_report_never_reproposes_decided_messages(home, monkeypatch):
+    # Regression 2026-09-25: the loop re-queued the same drafts every cycle
+    # after the operator rejected them, because the duplicate guard only
+    # looked at pending items. A decided message (rejected/approved/done)
+    # must never be re-proposed.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home)
+    tid = "conv-decided"
+    now = time.time()
+    i1 = aq.propose(home, "dm", "x", "main", summary="r",
+                    payload={"thread_id": tid, "in_reply_to": "m1"},
+                    reason="t", risk="normal")
+    aq.reject(home, i1["id"], reason="operator said no", decided_by="user")
+    aq.propose(home, "dm", "x", "main", summary="r",
+               payload={"thread_id": tid, "in_reply_to": "m2"},
+               reason="t", risk="normal")  # left pending
+    i4 = aq.propose(home, "dm", "x", "main", summary="r",
+                    payload={"thread_id": tid, "in_reply_to": "m4"},
+                    reason="t", risk="normal")
+    aq.set_status(home, i4["id"], "done")
+    res = a.report(_msgs(
+        (tid, "m0", "me", "hi", now - 300),
+        (tid, "m1", "them", "old q", now - 200),
+        (tid, "m2", "them", "old q2", now - 100),
+        (tid, "m4", "them", "handled already", now - 50),
+        (tid, "m3", "them", "brand new", now - 10)))
+    t = res["threads"][0]
+    # m1 rejected-skipped, m2 pending-skipped, m4 done-skipped: only m3 queues.
+    assert len(t["replies_queued"]) == 1
+    item = aq.get(home, t["replies_queued"][0]["approval_id"])
+    assert item is not None
+    assert item["payload"]["in_reply_to"] == "m3"
