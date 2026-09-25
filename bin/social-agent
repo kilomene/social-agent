@@ -1622,6 +1622,7 @@ def cmd_moderate(args):
             qtype, args.platform, acct["username"],
             f"hide comment {args.comment} ({rec['classification']})",
             {"comment": args.comment, "post": args.post,
+             "target_url": args.url or "",
              "text": (args.text or "")[:200]},
             reason=args.reason or f"moderation: {rec['classification']}",
             risk="high" if rec["classification"] in ("toxic", "spam") else "normal",
@@ -3402,6 +3403,8 @@ def build_parser():
     p.add_argument("--comment", required=True)
     p.add_argument("--text", default="", help="comment text (for classification)")
     p.add_argument("--reason", default="")
+    p.add_argument("--url", default="",
+                   help="post URL — the hide ticket opens this in the live browser")
     p = mo_sub.add_parser("approve", help="approve a hide proposal")
     p.add_argument("--id", required=True)
     p = mo_sub.add_parser("done", help="log an approved hide as performed")

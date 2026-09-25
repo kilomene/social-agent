@@ -93,6 +93,23 @@ def fresh_home():
     return tempfile.mkdtemp(prefix="sa-exam-")
 
 
+def fresh_tmp():
+    return tempfile.mkdtemp(prefix="sa-exam-pol-")
+
+
+def _policy_without_ack_risk(tmpdir):
+    """A copy of the repo policy with the x acknowledged-risk opt-in removed.
+
+    The live repo policy opts x in (owner's explicit 2026-09-25 choice);
+    exams of the fail-closed default need a policy without it.
+    """
+    src = os.path.join(REPO, "policy", "policy.yaml")
+    text = open(src, encoding="utf-8").read().replace("    - x\n", "")
+    p = os.path.join(tmpdir, "policy-noack.yaml")
+    open(p, "w", encoding="utf-8").write(text)
+    return p
+
+
 def setup_account(home):
     r = run(home, None, "accounts", "add", "--platform", "tiktok",
             "--username", "examuser", "--label", "main")
@@ -183,7 +200,7 @@ def exam_5_approval_lifecycle():
     home = fresh_home()
     setup_account(home)
     run(home, None, "engage", "comment", "--platform", "tiktok", "--account", "main",
-        "--target", "vid9", "--text", "Great breakdown!")
+        "--target", "https://example.com/v/vid9", "--text", "Great breakdown!")
     aid = state(home, "actions.json")[0]["id"]
     r = run(home, None, "engage", "approve", aid)
     ex.check("explicit approval succeeds", r.returncode == 0, r.stderr.strip())
@@ -426,6 +443,8 @@ def exam_10_scope_block():
     run(home, None, "mission", "create", "--name", "m10", "--platforms", "tiktok",
         "--topics", "ai video", "--actions", "post,like")
     run(home, None, "autonomy", "grant", "--mission", "m10", "--confirm")
+    run(home, None, "accounts", "add", "--platform", "instagram",
+        "--username", "examuser", "--label", "main")
     r = run(home, None, "engage", "like", "--platform", "instagram",
             "--account", "main", "--target", "v1")
     ex.check("off-platform action blocked", r.returncode == 2 and "scope" in r.stderr,
@@ -550,7 +569,8 @@ def exam_16_tos_scraping_refused():
     run(home, None, "accounts", "add", "--platform", "x",
         "--username", "examuser", "--label", "main")
     fx = os.path.join(FX, "notifications.json")
-    r = run(home, None, "watch", "start", "--type", "notification", "--platform", "x",
+    r = run(home, _policy_without_ack_risk(fresh_tmp()), "watch", "start", "--type",
+            "notification", "--platform", "x",
             "--account", "main", "--fixture", fx, "--id", "e16")
     ex.check("watcher start refused (exit 2)", r.returncode == 2, r.stderr.strip())
     ex.check("refusal cites the Terms of Service",
@@ -575,7 +595,8 @@ def exam_17_autonomy_cannot_override_tos():
     r = run(home, None, "autonomy", "grant", "--mission", "m17", "--confirm")
     ex.check("autonomy granted", r.returncode == 0 and "GRANTED" in r.stdout,
              r.stderr.strip()[:80])
-    r = run(home, None, "engage", "like", "--platform", "x",
+    pol17 = _policy_without_ack_risk(fresh_tmp())
+    r = run(home, pol17, "engage", "like", "--platform", "x",
             "--account", "main", "--target", "v1")
     ex.check("like refused despite autonomy (exit 2)", r.returncode == 2,
              r.stderr.strip()[:120])
@@ -796,6 +817,7 @@ def exam_30_hide_needs_approval():
     setup_account(home)
     r = run(home, None, "moderate", "hide", "--platform", "tiktok",
             "--account", "main", "--post", "v1", "--comment", "c9",
+            "--url", "https://example.com/v/v1",
             "--text", "mildly rude comment", "--reason", "borderline")
     mid = state(home, "moderation.json", [])[0]["id"]
     ex.check("proposal created (not executed)", r.returncode == 0 and
@@ -1048,7 +1070,7 @@ def exam_46_unified_approval_queue_publish():
     setup_account(home)
     # engage proposal sits in the queue as pending (watchers propose, never act)
     r = run(home, None, "engage", "like", "--platform", "tiktok",
-            "--account", "main", "--target", "v46")
+            "--account", "main", "--target", "https://example.com/v/v46")
     ex.check("proposal exits 0", r.returncode == 0, r.stderr.strip()[:80])
     pend = state(home, "approvals/pending.json", [])
     ex.check("one pending queue item", len(pend) == 1 and pend[0]["status"] == "pending",
@@ -1147,13 +1169,13 @@ def exam_49_crisis_pauses_and_repends():
     home = fresh_home()
     setup_account(home)
     run(home, None, "engage", "follow", "--platform", "tiktok",
-        "--account", "main", "--target", "someone")
+        "--account", "main", "--target", "https://example.com/u/someone")
     qid = state(home, "approvals/pending.json", [])[0]["id"]
     r = run(home, None, "crisis", "on", "--reason", "exam spike")
     ex.check("crisis on exits 0", r.returncode == 0 and "CRISIS MODE ON" in r.stdout,
              r.stdout.strip()[:80])
     r = run(home, None, "engage", "follow", "--platform", "tiktok",
-            "--account", "main", "--target", "other")
+            "--account", "main", "--target", "https://example.com/u/other")
     ex.check("acting refused under crisis", r.returncode == 2 and
              "crisis" in r.stderr.lower(), r.stderr.strip()[:100])
     r = run(home, None, "crisis", "status")
@@ -1440,7 +1462,7 @@ def exam_57_approval_issues_ticket():
     home = fresh_home()
     setup_account(home)
     r = run(home, None, "engage", "like", "--platform", "tiktok",
-            "--account", "main", "--target", "vid57")
+            "--account", "main", "--target", "https://example.com/v/vid57")
     ex.check("proposal created as dry-run", r.returncode == 0 and "DRY-RUN" in r.stdout)
     aid = state(home, "actions.json")[0]["id"]
     r = run(home, None, "engage", "approve", aid)
@@ -1462,9 +1484,9 @@ def exam_57_approval_issues_ticket():
     ex.check("ticket carries the platform", ticket["platform"] == "tiktok")
     ex.check("ticket carries the account", ticket["account"] == action["account"],
              ticket["account"])
-    ex.check("ticket carries the target", ticket["target"] == "vid57",
+    ex.check("ticket carries the target", ticket["target"] == "https://example.com/v/vid57",
              ticket["target"])
-    ex.check("ticket carries the parameters", ticket["parameters"]["target"] == "vid57",
+    ex.check("ticket carries the parameters", ticket["parameters"]["target"] == "https://example.com/v/vid57",
              str(ticket["parameters"])[:80])
     ex.check("ticket has an idempotency key", ticket["idem_key"].startswith("ticket:"),
              ticket["idem_key"])
@@ -1494,7 +1516,7 @@ def exam_58_mock_hands_fulfills_exactly_once():
     home = fresh_home()
     setup_account(home)
     run(home, None, "engage", "comment", "--platform", "tiktok",
-        "--account", "main", "--target", "vid58", "--text", "Great breakdown!")
+        "--account", "main", "--target", "https://example.com/v/vid58", "--text", "Great breakdown!")
     aid = state(home, "actions.json")[0]["id"]
     r = run(home, None, "engage", "approve", aid)
     tid = _ticket_id_from_approve(r.stdout)
@@ -1539,8 +1561,8 @@ def exam_59_tos_refusal_never_becomes_ticket():
     home = fresh_home()
     run(home, None, "accounts", "add", "--platform", "x",
         "--username", "examuser", "--label", "main")
-    r = run(home, None, "engage", "like", "--platform", "x",
-            "--account", "main", "--target", "vx1")
+    r = run(home, _policy_without_ack_risk(fresh_tmp()), "engage", "like",
+            "--platform", "x", "--account", "main", "--target", "vx1")
     ex.check("X-automation like refused (exit 2)", r.returncode == 2,
              f"exit={r.returncode}")
     ex.check("refusal is a ToS refusal (guard order: ToS first)",
@@ -1561,7 +1583,7 @@ def exam_60_crash_claimed_ticket_flagged_no_double_fulfill():
     home = fresh_home()
     setup_account(home)
     run(home, None, "engage", "like", "--platform", "tiktok",
-        "--account", "main", "--target", "vid60")
+        "--account", "main", "--target", "https://example.com/v/vid60")
     aid = state(home, "actions.json")[0]["id"]
     r = run(home, None, "engage", "approve", aid)
     tid = _ticket_id_from_approve(r.stdout)
