@@ -18,7 +18,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
         run: python3 -m pip install --upgrade pip pytest pyyaml
 
       - name: Run test suite
