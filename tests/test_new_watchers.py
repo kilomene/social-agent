@@ -22,11 +22,35 @@ def make(wtype, config, home="/tmp/sa-test-home"):
     return cls("t1", "tiktok", "examuser", config, home)
 
 
-def test_registry_has_14_watchers():
-    assert len(REGISTRY) == 14
+def test_registry_has_15_watchers():
+    assert len(REGISTRY) == 15
     for t in ["trend", "competitor", "sentiment", "mention", "velocity",
-              "content-idea", "crisis"]:
+              "content-idea", "crisis", "security"]:
         assert t in REGISTRY, t
+
+
+def test_security_watcher_urgent_alerts(tmp_path):
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    w = make("security", {"accounts": ["main"], "purge_drop_pct": 5,
+                          "unfollow_spike": 50, "window_hours": 24,
+                          "alert_cooldown_hours": 6})
+    items = [
+        {"id": "i1", "account": "main", "kind": "follower_delta",
+         "prev_followers": 10000, "followers": 9000, "timestamp": now},
+        {"id": "i2", "account": "main", "kind": "unfollow",
+         "count": 120, "timestamp": now},
+        {"id": "i3", "account": "main", "kind": "session", "known": False,
+         "session_id": "s9", "ip": "1.2.3.4", "location": "Unknown",
+         "timestamp": now},
+    ]
+    events = w.detect(items)
+    kinds = {e["kind"] for e in events}
+    assert {"security:follower_purge", "security:unfollow_spike",
+            "security:unknown_session"} <= kinds, kinds
+    assert all(e["severity"] == "urgent" for e in events)
+    # cooldown: same items produce no repeat alerts
+    assert w.detect(items) == []
 
 
 def test_trend_filters_off_mission(tmp_path):

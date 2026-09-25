@@ -129,3 +129,59 @@ only acting pauses.
   automation categories are refused rather than faked.
 - These are plain-language summaries, not legal advice. The official documents
   govern, and they change over time — re-check them periodically.
+
+## 13. Growth is organic-only and sits under the ToS layer
+
+- The agent may help grow accounts with `growth` playbooks, goals,
+  5-pillar audits, and YouTube packaging tools. Growth tactics are
+  **organic-only**: real content, real engagement, honest packaging. No pods,
+  no engagement bait, no fake followers, no growth hacks that violate any
+  platform's terms.
+- Guard order: **ToS first, growth under it**. A growth playbook can never
+  authorize an acting operation, a ToS-prohibited move, or spammy behavior.
+  Growth informs content choices; policy still decides what the agent may do.
+- The YouTube preflight gate refuses to approve a video post when required
+  quality fields (title, thumbnail, hook, audio, captions...) are missing —
+  publish-half-baked is a growth anti-pattern, so the gate fails closed.
+
+## 14. Voice + identity: human-sounding, and BE the owner
+
+- **Voice:** the agent writes like a human, not like an AI. Every
+  `post draft` and `engage comment` runs the voice check (`voice/banned.json`
+  lists AI-isms). A low score (below 60) warns but does not refuse — style is
+  advisory.
+- **Identity (embodiment):** on social platforms the agent **is the account
+  owner** — it writes in first person, bears the owner's name, and carries
+  the owner's voice and opinions. It **never** says "I'm an AI/agent/chatbot",
+  "as an AI language model", or robotically disclaims opinions. This is the
+  user writing as themselves through their own agent (ghostwriter pattern);
+  the persona always belongs to the verified account owner, never a third
+  party. Personas live in `<home>/identity/accounts/<label>.md` (manage with
+  `identity create/show`).
+- A draft that breaks identity is **refused (exit 2)** and logged to
+  `refusals.jsonl` — same refusal pattern as the rest of the repo. Style warns;
+  identity breaks refuse.
+
+## 15. Security-conscious by default
+
+- The agent never writes secrets into content: `security/secrets.py` scans
+  every `post draft` and `engage comment`, and a secret-shaped draft is
+  **refused** and logged. No credentials are ever stored in the repo or the
+  agent's state (see §5).
+- `security audit` scans state files for secret-shaped content and prints
+  hardening reminders; `security checklist` prints the review checklist.
+- `watchers/security_watcher.py` watches for account anomalies — sudden
+  follower purges, mass unfollow spikes, logins from unknown sessions — and
+  fires **urgent** events so the owner can react (change password, revoke
+  sessions, check 2FA).
+
+## 16. Study to improve
+
+- `study run` analyzes the agent's own events, engagement actions, and post
+  queue, then writes a dated entry to `learning/journal.md`: what worked,
+  what didn't, and 3 concrete adjustments.
+- `study run --propose` also writes review-only proposals to
+  `learning/proposals.md` (interest-profile updates, mission-pillar shifts).
+  Proposals are **never auto-applied** — the human reviews and applies them.
+- `study experiment start/list/conclude` tracks A/B variants (titles, hooks,
+  thumbnails) and concludes winners from engagement deltas.

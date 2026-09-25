@@ -12,6 +12,7 @@ from .framework import Watcher, WatcherError
 from .mention_watcher import MentionWatcher
 from .message_watcher import MessageWatcher
 from .notification_watcher import NotificationWatcher
+from .security_watcher import SecurityWatcher
 from .sentiment_watcher import SentimentWatcher
 from .trend_watcher import TrendWatcher
 from .velocity_watcher import VelocityWatcher
@@ -33,6 +34,7 @@ REGISTRY = {
         VelocityWatcher,
         ContentIdeaWatcher,
         CrisisWatcher,
+        SecurityWatcher,
     )
 }
 

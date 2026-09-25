@@ -66,6 +66,44 @@ DMs — are blocked and logged to `refusals.jsonl`. Profile changes **always**
 need explicit `profile approve`, even in autonomous mode. See
 `policy/guardrails.md` §9–10.
 
+## Growth, voice, identity, study
+
+Organic growth tooling — all under the ToS layer (§13), all defensive:
+
+```bash
+# organic playbooks + goals + account audits
+social-agent growth playbook --platform youtube
+social-agent growth goals set --platform youtube --account main \
+    --target-followers 10000 --deadline 2026-12-31
+social-agent growth audit --platform youtube --account main --followers 850 \
+    --posts-per-week 3 --avg-views 4200 --avg-likes 180 --avg-comments 12 \
+    --niche "AI video tutorials" --has-bio --has-avatar --has-cta
+
+# YouTube packaging: quality gate + scored titles + descriptions
+social-agent youtube titles "my sora workflow" --keyword sora
+social-agent youtube preflight --title "..." --thumbnail thumb.png \
+    --hook-30s --audio --retention-edit --captions --end-screen
+
+# write like a human; BE the account owner (identity breaks are refused)
+social-agent voice check --text "draft text..." --platform tiktok
+social-agent identity create --account main --name "Owner Name" \
+    --voice-traits "dry humor, short sentences" --opinions "thumbnails matter most"
+social-agent identity check --text "draft text..." --account main
+
+# security-conscious: scan drafts, audit state, account-anomaly watcher
+social-agent security scan --text "draft text..."
+social-agent security audit
+
+# study-to-improve: journal, experiments, review-only proposals
+social-agent study run --propose
+social-agent study experiment start --name hook-test --kind hook \
+    --a "bold claim" --b "question"
+social-agent study experiment conclude --name hook-test --metric-a 4.2 --metric-b 5.9
+```
+
+Every `post draft` and `engage comment` automatically runs the content gates:
+secrets → refused, identity breaks → refused, AI-ish voice → warning.
+
 ## Heartbeats
 
 Every watcher run emits `<base>/<watcher-id>/start`, then success or `/fail`
@@ -85,13 +123,24 @@ for pairing with the heartbeat repo's cron wrapper and daemon.
 
 ```
 bin/social-agent        CLI (accounts, watch, post, engage, mission, autonomy,
-                        profile, heartbeat, research, analytics, doctor)
+                        profile, heartbeat, research, analytics, doctor,
+                        growth, youtube, voice, security, study, identity)
 watchers/               poll-based monitors; check() -> structured events (read-only)
   framework.py          base class: config schema, state, idempotent dedupe, events.jsonl
   notification|comment|feed|follow|activity|channel|message _watcher.py
-  trend|competitor|sentiment|mention|velocity|content-idea|crisis _watcher.py
+  trend|competitor|sentiment|mention|velocity|content-idea|crisis|security _watcher.py
   fixtures/             sample JSON feeds so everything runs offline
 engagement/             interest scoring (interests profile) + anti-spam guards
+growth/                 organic playbooks, follower goals, 5-pillar audits,
+                        YouTube packaging (titles, descriptions, preflight gate)
+voice/                  human-sounding style: banned AI-isms, per-platform
+                        profiles, `check_text` (warns below score 60)
+identity/               embodiment: per-account personas; the agent IS the owner
+                        (never claims to be an AI — breaks are refused)
+security/               secret detection (refuses secret-shaped drafts),
+                        state audits, checklist, security checklist
+learning/               study-to-improve: journal, A/B experiments, review-only
+                        proposals (never auto-applied)
 missions.py / autonomy.py
                         mission files (area of work) + scoped autonomy grants
 heartbeat/              protocol-compatible ping client (stdlib); heartbeat.yaml config
@@ -125,6 +174,18 @@ Read `policy/guardrails.md`. In short:
 - Conservative per-platform hourly/daily caps; the CLI refuses over-cap actions.
 - No credentials in the repo or in state — sign-in happens in your own browser.
 - Prohibited by design: mass follow/unfollow, comment spam, astroturfing.
+- Growth is organic-only and sits under the ToS layer (guardrails §13):
+  playbooks inform content choices, they never authorize acting operations.
+- Content gates on every `post draft` / `engage comment`: secret detection
+  refuses secret-shaped drafts; the identity check refuses drafts that break
+  embodiment (claiming to be an AI); the voice check warns on AI-ish style.
+  Refusals exit with code 2 and are logged to `refusals.jsonl`.
+- The agent writes **as the account owner** (guardrails §14): first person,
+  owner's name and voice, never "I'm an AI". Personas live in
+  `<home>/identity/accounts/<label>.md` (`identity create/show`).
+- Security-conscious: no secrets in state (audited by `security audit`),
+  and a security watcher fires urgent events on follower purges, mass
+  unfollows, or unknown login sessions (guardrails §15).
 - Per-platform Terms of Service are the ceiling: `platforms/tos.py` checks
   every acting operation and watcher poll against `platforms/<name>/tos_rules.yaml`
   *before* missions, autonomy, quiet hours, and rate limits. A ToS-prohibited

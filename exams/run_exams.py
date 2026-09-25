@@ -467,6 +467,151 @@ def exam_18_restricted_action_proceeds_with_advisory():
 
 
 
+# ------------------------------------------- growth/voice/security/study exams ---
+
+def exam_19_voice_flags_ai_draft():
+    ex = Exam("exam-19", "Voice check flags an AI-isms-laden draft")
+    home = fresh_home()
+    r = run(home, None, "voice", "check",
+            "--text", "Delve into this game-changer: leverage these tips to unlock success!")
+    ex.check("exit 0 (voice warns, never refuses)", r.returncode == 0, r.stderr.strip())
+    ex.check("flags banned AI-isms", "delve" in r.stdout.lower(), r.stdout.strip()[:200])
+    ex.check("score below clean threshold", "64/100" in r.stdout, r.stdout.strip()[:120])
+    return ex
+
+
+def exam_20_youtube_preflight_blocks():
+    ex = Exam("exam-20", "YouTube preflight blocks a video post missing title/thumbnail")
+    home = fresh_home()
+    r = run(home, None, "youtube", "preflight", "--audio", "--captions")
+    ex.check("preflight refused (exit 2)", r.returncode == 2, r.stderr.strip()[:160])
+    ex.check("missing title named", "title" in r.stderr.lower(), r.stderr.strip()[:200])
+    ex.check("missing thumbnail named", "thumbnail" in r.stderr.lower(), r.stderr.strip()[:200])
+    return ex
+
+
+def exam_21_youtube_titles_scored():
+    ex = Exam("exam-21", "YouTube titles command returns 5 scored variants")
+    home = fresh_home()
+    r = run(home, None, "youtube", "titles", "my cat pays rent", "--keyword", "cat")
+    ex.check("exit 0", r.returncode == 0, r.stderr.strip())
+    lines = [l for l in r.stdout.splitlines() if l.startswith("[")]
+    ex.check("exactly 5 variants", len(lines) == 5, r.stdout.strip()[:200])
+    scores = [int(l.split("]")[0].strip("[ ")) for l in lines]
+    ex.check("scores sorted desc", scores == sorted(scores, reverse=True), str(scores))
+    return ex
+
+
+def exam_22_study_produces_adjustments():
+    ex = Exam("exam-22", "Study run derives adjustments from fixture analytics")
+    home = fresh_home()
+    events = [
+        {"timestamp": "2026-09-25T00:00:00Z", "kind": "crisis:spike",
+         "data": {"topics": ["audio quality"]}},
+        {"timestamp": "2026-09-25T01:00:00Z", "kind": "content-idea:question",
+         "data": {"topics": ["hooks"]}},
+    ]
+    with open(os.path.join(home, "events.jsonl"), "w", encoding="utf-8") as fh:
+        for e in events:
+            fh.write(json.dumps(e) + "\n")
+    r = run(home, None, "study", "run")
+    ex.check("exit 0", r.returncode == 0, r.stderr.strip())
+    journal = os.path.join(home, "learning", "journal.md")
+    ex.check("journal.md written", os.path.exists(journal))
+    body = open(journal, encoding="utf-8").read()
+    ex.check("journal reacts to the crisis spike", "crisis" in body.lower())
+    ex.check("journal contains concrete adjustments",
+             "3 concrete adjustments" in body, body[-300:])
+    return ex
+
+
+def exam_23_security_refuses_secret_draft():
+    ex = Exam("exam-23", "Security gate refuses a draft containing a secret")
+    home = fresh_home()
+    setup_account(home)
+    r = run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+            "--text", "here is my api_key=sk-abcdefghij1234567890 use it")
+    ex.check("draft refused (exit 2)", r.returncode == 2, r.stderr.strip()[:160])
+    ex.check("refusal cites secret detection", "secret" in r.stderr.lower(),
+             r.stderr.strip()[:160])
+    ex.check("no draft was created", state(home, "queue.json", []) == [])
+    refusals = [json.loads(l) for l in open(os.path.join(home, "refusals.jsonl"))]
+    ex.check("refusal logged with secret reason",
+             refusals and "secret" in refusals[0]["reason"].lower(),
+             str(refusals[0])[:120] if refusals else "no refusals file")
+    return ex
+
+
+def exam_24_growth_audit_pillars():
+    ex = Exam("exam-24", "Growth audit scores the 5 pillars and suggests fixes")
+    home = fresh_home()
+    r = run(home, None, "growth", "audit", "--platform", "youtube",
+            "--account", "main", "--followers", "850", "--posts-per-week", "3",
+            "--avg-views", "4200", "--avg-likes", "180", "--avg-comments", "12",
+            "--niche", "AI video tutorials", "--has-bio", "--has-avatar", "--has-cta")
+    ex.check("exit 0", r.returncode == 0, r.stderr.strip())
+    for pillar in ("consistency", "hooks", "niche_clarity", "engagement_rate",
+                   "profile_conversion"):
+        ex.check(f"pillar scored: {pillar}", pillar in r.stdout, r.stdout.strip()[:200])
+    ex.check("overall score shown", "overall:" in r.stdout)
+    ex.check("fixes suggested", "fixes (worst first):" in r.stdout)
+    return ex
+
+
+def exam_25_identity_flags_ai_claim():
+    ex = Exam("exam-25", "Identity check flags a draft claiming to be an AI")
+    home = fresh_home()
+    setup_account(home)
+    r = run(home, None, "identity", "create", "--account", "main",
+            "--name", "Exam Owner", "--voice-traits", "dry humor")
+    ex.check("persona created", r.returncode == 0, r.stderr.strip())
+    r = run(home, None, "identity", "check",
+            "--text", "As an AI language model, I love this video!",
+            "--account", "main")
+    ex.check("identity check failed (exit 2)", r.returncode == 2, r.stderr.strip()[:160])
+    ex.check("failure cites identity break", "identity break" in r.stderr.lower(),
+             r.stderr.strip()[:200])
+    return ex
+
+
+def exam_26_identity_first_person_passes():
+    ex = Exam("exam-26", "A good first-person owner draft passes identity check")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "identity", "create", "--account", "main",
+        "--name", "Exam Owner", "--voice-traits", "dry humor",
+        "--never-say", "smash that like button")
+    r = run(home, None, "identity", "check",
+            "--text", "I spent 11 minutes rendering this shot. My favorite part is the lighting.",
+            "--account", "main")
+    ex.check("identity check passed (exit 0)", r.returncode == 0, r.stderr.strip())
+    ex.check("PASSED in output", "PASSED" in r.stdout, r.stdout.strip()[:120])
+    r = run(home, None, "identity", "check",
+            "--text", "Smash that like button guys!", "--account", "main")
+    ex.check("persona never-say violation refused (exit 2)", r.returncode == 2,
+             r.stderr.strip()[:160])
+    return ex
+
+
+def exam_27_post_draft_identity_refused():
+    ex = Exam("exam-27", "post draft with identity-breaking text is refused end-to-end")
+    home = fresh_home()
+    setup_account(home)
+    run(home, None, "identity", "create", "--account", "main", "--name", "Exam Owner")
+    r = run(home, None, "post", "draft", "--platform", "tiktok", "--account", "main",
+            "--text", "As an AI language model, here is my post")
+    ex.check("draft refused (exit 2)", r.returncode == 2, r.stderr.strip()[:160])
+    ex.check("refusal cites identity", "identity" in r.stderr.lower(),
+             r.stderr.strip()[:160])
+    ex.check("no draft was created", state(home, "queue.json", []) == [])
+    refusals = [json.loads(l) for l in open(os.path.join(home, "refusals.jsonl"))]
+    ex.check("refusal logged to refusals.jsonl with identity reason",
+             refusals and "identity" in refusals[0]["reason"].lower(),
+             str(refusals[0])[:140] if refusals else "no refusals file")
+    return ex
+
+
+
 EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_2_engage_blocked_without_approval,
          exam_3_rate_limit_enforced,
@@ -484,7 +629,16 @@ EXAMS = [exam_1_watcher_proposes_without_acting,
          exam_15_content_idea_aggregation,
          exam_16_tos_scraping_refused,
          exam_17_autonomy_cannot_override_tos,
-         exam_18_restricted_action_proceeds_with_advisory]
+         exam_18_restricted_action_proceeds_with_advisory,
+         exam_19_voice_flags_ai_draft,
+         exam_20_youtube_preflight_blocks,
+         exam_21_youtube_titles_scored,
+         exam_22_study_produces_adjustments,
+         exam_23_security_refuses_secret_draft,
+         exam_24_growth_audit_pillars,
+         exam_25_identity_flags_ai_claim,
+         exam_26_identity_first_person_passes,
+         exam_27_post_draft_identity_refused]
 
 
 def main():

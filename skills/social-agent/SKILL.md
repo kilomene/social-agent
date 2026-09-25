@@ -80,15 +80,39 @@ social-agent profile approve <proposal-id>
 social-agent heartbeat status
 social-agent research "AI video" --platforms tiktok,x
 social-agent analytics --days 7
+
+# 9. Growth, voice, identity, study (organic-only, under the ToS layer)
+social-agent growth playbook --platform youtube
+social-agent growth goals set --platform youtube --account main \
+    --target-followers 10000 --deadline 2026-12-31
+social-agent growth audit --platform youtube --account main --followers 850 \
+    --posts-per-week 3 --niche "AI video tutorials" --has-bio --has-avatar
+social-agent youtube titles "my sora workflow" --keyword sora
+social-agent youtube preflight --title "..." --thumbnail thumb.png \
+    --hook-30s --audio --retention-edit --captions --end-screen
+social-agent voice check --text "draft..." --platform tiktok
+social-agent identity create --account main --name "Owner Name" \
+    --voice-traits "dry humor, short sentences"
+social-agent identity check --text "draft..." --account main
+social-agent security audit
+social-agent study run --propose
 ```
 
-## Watcher types (14)
+Every `post draft` and `engage comment` automatically runs content gates:
+secret-shaped text is **refused**, identity breaks (claiming to be an AI) are
+**refused**, AI-ish voice **warns** — see `policy/guardrails.md` §14–15. The
+agent writes **as the account owner** (ghostwriter pattern; persona always
+belongs to the verified account owner, never a third party). Growth is
+organic-only and sits under the ToS layer (§13).
+
+## Watcher types (15)
 
 `notification` `comment` `feed` `follow` `activity` `channel` `message`
 `trend` (trending topics filtered by interests) `competitor` (rival cadence +
 deltas digest) `sentiment` (sentiment-shift alerts) `mention` (unified
 @mentions) `velocity` (viral-velocity early alerts) `content-idea` (repeated
 audience questions → video ideas) `crisis` (negative-spike urgent alerts)
+`security` (follower purges, mass unfollows, unknown sessions — urgent alerts)
 — see `watchers/` for each config schema.
 
 ## Environment overrides (for tests)

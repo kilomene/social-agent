@@ -34,6 +34,15 @@ from engagement import interest as interest_mod
 from heartbeat import pinger as hb
 import missions as missions_mod
 import autonomy as autonomy_mod
+from growth import strategy as growth_strategy
+from growth import goals as growth_goals
+from growth import audit as growth_audit_mod
+from growth import youtube as yt_mod
+from voice import check as voice_check_mod
+from security import secrets as secrets_mod
+from security import audit as security_audit_mod
+from learning import study as study_mod
+from identity import check as identity_mod
 
 VERSION = "0.1.0"
 
@@ -280,6 +289,42 @@ def check_platform(name):
     return name
 
 
+# ---------------------------------------------------------- content gates ---
+
+def content_gates(platform, account_label, text, kind):
+    """Run the content gates on draft text (post drafts, comments).
+
+    Order: secrets (hard refuse) -> identity (hard refuse on breaks) ->
+    voice (warn only). Returns a list of warning strings. Raises Refused
+    (logged to refusals.jsonl) on secret or identity violations.
+    """
+    warnings = []
+    found, pat = secrets_mod.contains_secret(text or "")
+    if found:
+        reason = (f"security: draft contains secret-shaped content ({pat}); "
+                  f"the agent never writes secrets into content")
+        log_refusal(kind, platform, "", reason)
+        raise Refused(reason)
+    ident = identity_mod.check_identity(text or "", account_label, home_dir())
+    if not ident["pass"]:
+        reason = "identity: " + "; ".join(ident["reasons"])
+        log_refusal(kind, platform, "", reason)
+        raise Refused(reason)
+    for adv in ident["advisories"]:
+        warnings.append(f"identity note: {adv}")
+    v = voice_check_mod.check_text(text or "", platform)
+    if not v["human"]:
+        warnings.append(f"voice warning: AI-ness score {v['score']}/100 "
+                        f"(threshold {voice_check_mod.WARN_THRESHOLD}) — " +
+                        "; ".join(v["suggestions"][:2]))
+    return warnings
+
+
+def _warn(warnings):
+    for w in warnings:
+        print(f"WARNING: {w}")
+
+
 # --------------------------------------------------------------- accounts ---
 
 def cmd_accounts(args):
@@ -430,6 +475,8 @@ def cmd_post(args):
     if args.op == "draft":
         check_platform(args.platform)
         acct = resolve_account(args.account)
+        label = acct.get("label") or acct["username"]
+        _warn(content_gates(args.platform, label, args.text or "", "post_draft"))
         pid = args.id or new_id("p")
         queue.append({
             "id": pid, "platform": args.platform, "account": acct["username"],
@@ -523,6 +570,10 @@ def cmd_engage(args):
             check_like_guards(args.platform, args.author or "")
         if args.op == "follow":
             check_follow_guards(args.platform)
+        if args.op == "comment":
+            label = acct.get("label") or acct["username"]
+            _warn(content_gates(args.platform, label, args.text or "",
+                                "engage_comment"))
 
         # --- autonomous mode: auto-approve in scope, block out of scope ---
         mission = autonomous_decision(args.platform, args.op, text_for_scope)
@@ -920,6 +971,228 @@ def cmd_heartbeat(args):
 
 # ----------------------------------------------------------------- doctor ---
 
+def cmd_growth(args):
+    if args.op == "goals":
+        if args.gop == "set":
+            check_platform(args.platform)
+            goal = growth_goals.set_goal(
+                home_dir(), args.platform, args.account,
+                args.target_followers, args.deadline,
+                label=args.label, starting_followers=args.starting_followers)
+            print(f"goal {goal['id']}: {goal['label']} "
+                  f"({args.platform}/{args.account})")
+        elif args.gop == "list":
+            goals = growth_goals.load_goals(home_dir())
+            if args.platform:
+                goals = [g for g in goals if g["platform"] == args.platform]
+            if not goals:
+                print("no goals yet — run `growth goals set`")
+                return
+            for g in goals:
+                prog = growth_goals.progress(home_dir(), g)
+                growth_goals.check_milestones(home_dir(), g, prog)
+                rec = next((x for x in growth_goals.load_goals(home_dir())
+                            if x["id"] == g["id"]), g)
+                print(f"{g['id']} [{g['platform']}/{g['account']}] {g['label']}: "
+                      f"{prog['current']}/{prog['target']} followers "
+                      f"({prog['percent']}% of target, {prog['remaining']} to go, "
+                      f"deadline {prog['deadline']})")
+                for m in rec.get("milestones_hit", []):
+                    print(f"    milestone: {m}%")
+    elif args.op == "audit":
+        check_platform(args.platform)
+        inputs = {
+            "posts_per_week": args.posts_per_week,
+            "avg_views": args.avg_views,
+            "followers": args.followers,
+            "avg_likes": args.avg_likes,
+            "avg_comments": args.avg_comments,
+            "niche": args.niche,
+            "has_bio": args.has_bio, "has_link": args.has_link,
+            "has_avatar": args.has_avatar, "has_cta": args.has_cta,
+        }
+        res = growth_audit_mod.audit(args.platform, args.account, inputs)
+        for name, s in res["pillars"].items():
+            score = "?" if s["score"] is None else f"{s['score']}/100"
+            print(f"{name:18s} {score:8s} {s['detail']}")
+        ov = res["overall"]
+        print(f"overall: {'?' if ov is None else f'{ov}/100'}")
+        print("fixes (worst first):")
+        for f in res["fixes"]:
+            print(f"  - {f}")
+    elif args.op == "playbook":
+        pb = growth_strategy.playbook(args.platform)
+        print(f"== growth playbook: {args.platform} ==")
+        for k, v in pb.items():
+            print(f"\n[{k}]")
+            if isinstance(v, list):
+                for item in v:
+                    print(f"  - {item}")
+            else:
+                print(f"  {v}")
+
+
+def cmd_youtube(args):
+    if args.op == "preflight":
+        meta = {
+            "title": args.title, "thumbnail": args.thumbnail,
+            "hook_30s": args.hook_30s, "resolution_ok": args.resolution == "1080p" or args.resolution == "4k",
+            "audio_clean": args.audio, "retention_edit": args.retention_edit,
+            "description": args.description, "end_screen": args.end_screen,
+            "captions": args.captions,
+        }
+        print("quality checklist:")
+        for item in yt_mod.QUALITY_CHECKLIST:
+            mark = "OK " if meta.get(item["key"]) else ("REQ" if item["required"] else "opt")
+            print(f"  [{mark}] {item['label']}")
+        ok, missing = yt_mod.preflight(meta)
+        if not ok:
+            print("REFUSED (preflight): missing required fields: "
+                  + ", ".join(missing), file=sys.stderr)
+            sys.exit(2)
+        print("preflight passed — required quality fields present")
+    elif args.op == "titles":
+        variants = yt_mod.title_variants(args.idea, args.keyword or "")
+        for v in variants:
+            print(f"[{v['score']:3d}] {v['title']}   ({v['formula']})")
+    elif args.op == "description":
+        link_pairs = []
+        for pair in args.link or []:
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                link_pairs.append((k, v))
+        tags = [h.strip().lstrip("#") for h in (args.hashtags or "").split(",")
+                if h.strip()]
+        desc = yt_mod.build_description(
+            args.title, summary=args.summary,
+            timestamps=(args.timestamps.split(",")) if args.timestamps else [],
+            links=link_pairs, cta=args.cta, hashtags=tags)
+        print(desc)
+    elif args.op == "thumbnail-brief":
+        print(yt_mod.thumbnail_brief(args.topic, args.style, args.text))
+
+
+def cmd_voice(args):
+    if args.op == "check":
+        res = voice_check_mod.check_text(args.text, args.platform)
+        print(f"voice score: {res['score']}/100 — "
+              f"{'sounds human' if res['human'] else 'sounds AI-ish'}")
+        for f in res["flags"]:
+            print(f"  flag [{f['type']}]: {f['match']!r} — {f['why']}")
+        for s in res["suggestions"]:
+            print(f"  fix: {s}")
+        if not res["human"]:
+            print(f"WARNING: score below threshold {voice_check_mod.WARN_THRESHOLD}",
+                  file=sys.stderr)
+    elif args.op == "guide":
+        p = os.path.join(REPO_ROOT, "voice", "guide.md")
+        with open(p, encoding="utf-8") as fh:
+            print(fh.read())
+
+
+def cmd_security(args):
+    if args.op == "audit":
+        for r in security_audit_mod.security_audit(home_dir()):
+            print(f"[{r['status'].upper():4s}] {r['check']}: {r['detail']}")
+    elif args.op == "checklist":
+        p = os.path.join(REPO_ROOT, "security", "checklist.md")
+        with open(p, encoding="utf-8") as fh:
+            print(fh.read())
+    elif args.op == "scan":
+        found, pat = secrets_mod.contains_secret(args.text)
+        if found:
+            print(f"REFUSED: secret-shaped content detected ({pat})")
+            sys.exit(2)
+        print("no secret-shaped content detected")
+
+
+def cmd_study(args):
+    if args.op == "run":
+        entry = study_mod.run_study(home_dir())
+        print(f"study entry written: {entry['events_analyzed']} events, "
+              f"{entry['actions_done']} actions done")
+        print("adjustments:")
+        for i, a in enumerate(entry["adjustments"], 1):
+            print(f"  {i}. {a}")
+        if args.propose:
+            props = study_mod.propose_updates(home_dir())
+            print("proposals (REVIEW ONLY, not applied):")
+            for p_ in props:
+                print(f"  - {p_}")
+    elif args.op == "experiment":
+        if args.eop == "start":
+            name = study_mod.start_experiment(home_dir(), args.name, args.kind,
+                                              args.a, args.b)
+            print(f"experiment {name!r} started: A={args.a!r} vs B={args.b!r}")
+        elif args.eop == "list":
+            for e in study_mod.list_experiments(home_dir()):
+                print(f"{e['name']} [{e['status']}] {e['kind']}: "
+                      f"A={e['variant_a']!r} vs B={e['variant_b']!r}"
+                      + (f" winner={e['winner']}" if e.get("winner") else ""))
+        elif args.eop == "conclude":
+            exp = study_mod.conclude_experiment(home_dir(), args.name,
+                                                args.metric_a, args.metric_b)
+            print(f"experiment {args.name!r} concluded: A={exp['metric_a']} "
+                  f"B={exp['metric_b']} winner={exp['winner']}")
+
+
+def _csv_list(s):
+    return [x.strip() for x in (s or "").split(",") if x.strip()]
+
+
+def cmd_identity(args):
+    if args.op == "create":
+        acct = resolve_account(args.account)
+        label = acct.get("label") or acct["username"]
+        meta = {"name": args.name,
+                "voice_traits": _csv_list(args.voice_traits),
+                "known_facts": _csv_list(args.facts),
+                "opinions": _csv_list(args.opinions),
+                "never_say": _csv_list(args.never_say)}
+        p = identity_mod.persona_path(home_dir(), label)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("---\n")
+            fh.write(f"name: {json.dumps(args.name)}\n")
+            for key, val in (("voice_traits", _csv_list(args.voice_traits)),
+                             ("known_facts", _csv_list(args.facts)),
+                             ("opinions", _csv_list(args.opinions)),
+                             ("never_say", _csv_list(args.never_say))):
+                fh.write(f"{key}:\n")
+                for item in val:
+                    fh.write(f"  - {json.dumps(item)}\n")
+            fh.write("---\n\n" + (args.notes or "Persona notes for "
+                                  f"{args.name}. Edit freely."))
+        print(f"persona created for {label} at {p}")
+    elif args.op == "show":
+        acct = resolve_account(args.account)
+        label = acct.get("label") or acct["username"]
+        meta, body = identity_mod.load_persona(home_dir(), label)
+        if meta is None:
+            print(f"no persona on file for {label!r}")
+            return
+        print(f"persona for {label} (owner: {meta.get('name', '?')})")
+        for k in ("voice_traits", "known_facts", "opinions", "never_say"):
+            vals = identity_mod._as_list(meta.get(k))
+            if vals:
+                print(f"  {k}: {', '.join(vals)}")
+        if body:
+            print(f"\n{body}")
+    elif args.op == "check":
+        acct = resolve_account(args.account)
+        label = acct.get("label") or acct["username"]
+        res = identity_mod.check_identity(args.text, label, home_dir())
+        if res["pass"]:
+            print(f"identity check PASSED for {label}")
+        else:
+            print(f"identity check FAILED for {label}", file=sys.stderr)
+            for r in res["reasons"]:
+                print(f"  - {r}", file=sys.stderr)
+            sys.exit(2)
+        for a in res["advisories"]:
+            print(f"note: {a}")
+
+
 def cmd_doctor(args):
     checks = []
 
@@ -1131,6 +1404,117 @@ def build_parser():
     n.add_argument("--watcher", default=None)
     n.add_argument("--days", type=int, default=None)
     n.set_defaults(func=cmd_analytics)
+
+    g = sub.add_parser("growth", help="organic growth: goals, audits, playbooks")
+    g_sub = g.add_subparsers(dest="op", required=True)
+    p = g_sub.add_parser("goals", help="growth goals")
+    gg_sub = p.add_subparsers(dest="gop", required=True)
+    p = gg_sub.add_parser("set", help="set a follower goal")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", required=True)
+    p.add_argument("--target-followers", type=int, required=True)
+    p.add_argument("--deadline", required=True, help="YYYY-MM-DD")
+    p.add_argument("--label", default="")
+    p.add_argument("--starting-followers", type=int, default=0)
+    p = gg_sub.add_parser("list", help="list goals + progress")
+    p.add_argument("--platform", default=None)
+    p = g_sub.add_parser("audit", help="5-pillar account audit")
+    p.add_argument("--platform", required=True)
+    p.add_argument("--account", required=True)
+    p.add_argument("--followers", type=int, default=None)
+    p.add_argument("--posts-per-week", type=float, default=None)
+    p.add_argument("--avg-views", type=float, default=None)
+    p.add_argument("--avg-likes", type=float, default=None)
+    p.add_argument("--avg-comments", type=float, default=None)
+    p.add_argument("--niche", default=None)
+    p.add_argument("--has-bio", action="store_true", default=None)
+    p.add_argument("--has-link", action="store_true", default=None)
+    p.add_argument("--has-avatar", action="store_true", default=None)
+    p.add_argument("--has-cta", action="store_true", default=None)
+    p = g_sub.add_parser("playbook", help="print a platform's organic playbook")
+    p.add_argument("--platform", required=True,
+                   help=",".join(growth_strategy.list_platforms()))
+    g.set_defaults(func=cmd_growth)
+
+    y = sub.add_parser("youtube", help="YouTube packaging: preflight, titles, descriptions")
+    y_sub = y.add_subparsers(dest="op", required=True)
+    p = y_sub.add_parser("preflight", help="quality gate before posting a video")
+    p.add_argument("--title", default="")
+    p.add_argument("--thumbnail", default="", help="thumbnail path or 'yes'")
+    p.add_argument("--hook-30s", action="store_true")
+    p.add_argument("--resolution", default="1080p")
+    p.add_argument("--audio", action="store_true")
+    p.add_argument("--retention-edit", action="store_true")
+    p.add_argument("--description", default="")
+    p.add_argument("--end-screen", action="store_true")
+    p.add_argument("--captions", action="store_true")
+    p = y_sub.add_parser("titles", help="5 scored title variants from a raw idea")
+    p.add_argument("idea")
+    p.add_argument("--keyword", default="")
+    p = y_sub.add_parser("description", help="build an SEO-structured description")
+    p.add_argument("--title", required=True)
+    p.add_argument("--summary", default="")
+    p.add_argument("--timestamps", default="")
+    p.add_argument("--link", action="append", default=[], help="label=url (repeatable)")
+    p.add_argument("--cta", default="")
+    p.add_argument("--hashtags", default="")
+    p = y_sub.add_parser("thumbnail-brief", help="generate a thumbnail design brief")
+    p.add_argument("--topic", required=True)
+    p.add_argument("--style", default="bold minimal")
+    p.add_argument("--text", default="")
+    y.set_defaults(func=cmd_youtube)
+
+    v = sub.add_parser("voice", help="write like a human: checks and style guide")
+    v_sub = v.add_subparsers(dest="op", required=True)
+    p = v_sub.add_parser("check", help="score text for AI-ness")
+    p.add_argument("--text", required=True)
+    p.add_argument("--platform", default="general")
+    v_sub.add_parser("guide", help="print the voice style guide")
+    v.set_defaults(func=cmd_voice)
+
+    s = sub.add_parser("security", help="security-conscious operations")
+    s_sub = s.add_subparsers(dest="op", required=True)
+    s_sub.add_parser("audit", help="audit state files for secrets + hardening reminders")
+    s_sub.add_parser("checklist", help="print the security checklist")
+    p = s_sub.add_parser("scan", help="scan text for secret-shaped content")
+    p.add_argument("--text", required=True)
+    s.set_defaults(func=cmd_security)
+
+    st = sub.add_parser("study", help="study-to-improve: journal + experiments")
+    st_sub = st.add_subparsers(dest="op", required=True)
+    p = st_sub.add_parser("run", help="analyze performance, write journal entry")
+    p.add_argument("--propose", action="store_true",
+                   help="also write review-only improvement proposals")
+    p = st_sub.add_parser("experiment", help="A/B experiments")
+    e_sub = p.add_subparsers(dest="eop", required=True)
+    p = e_sub.add_parser("start", help="start an experiment")
+    p.add_argument("--name", required=True)
+    p.add_argument("--kind", required=True, help="e.g. title, hook, thumbnail")
+    p.add_argument("--a", required=True)
+    p.add_argument("--b", required=True)
+    e_sub.add_parser("list", help="list experiments")
+    p = e_sub.add_parser("conclude", help="conclude an experiment with metrics")
+    p.add_argument("--name", required=True)
+    p.add_argument("--metric-a", type=float, required=True)
+    p.add_argument("--metric-b", type=float, required=True)
+    st.set_defaults(func=cmd_study)
+
+    ident = sub.add_parser("identity", help="persona embodiment: be the account owner")
+    i_sub = ident.add_subparsers(dest="op", required=True)
+    p = i_sub.add_parser("create", help="create a persona file for an account")
+    p.add_argument("--account", required=True)
+    p.add_argument("--name", required=True, help="owner's name")
+    p.add_argument("--voice-traits", default="", help="comma-separated")
+    p.add_argument("--facts", default="", help="comma-separated known facts")
+    p.add_argument("--opinions", default="", help="comma-separated opinions")
+    p.add_argument("--never-say", default="", help="comma-separated forbidden phrases")
+    p.add_argument("--notes", default="", help="free-form persona notes")
+    p = i_sub.add_parser("show", help="show an account's persona")
+    p.add_argument("--account", required=True)
+    p = i_sub.add_parser("check", help="verify text is written as the owner")
+    p.add_argument("--text", required=True)
+    p.add_argument("--account", required=True)
+    ident.set_defaults(func=cmd_identity)
 
     d = sub.add_parser("doctor", help="environment checks")
     d.set_defaults(func=cmd_doctor)
