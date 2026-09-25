@@ -1890,8 +1890,10 @@ def exam_68_dm_agent_lifecycle():
     ex.check("dm-agent list shows four platforms",
              r.returncode == 0 and "x" in r.stdout and "tiktok" in r.stdout,
              r.stdout.strip()[:120])
-    ex.check("tiktok adapter reports not-ready",
-             "not-ready" in r.stdout and "app-only" in r.stdout,
+    ex.check("tiktok adapter reports ready (bodies readable on web)",
+             any(line.startswith("tiktok") and "ready" in line
+                 and "not-ready" not in line
+                 for line in r.stdout.splitlines()),
              r.stdout.strip()[:160])
     r = run(home, None, "dm-agent", "start", "--platform", "x",
             "--account", "main")
@@ -2017,16 +2019,25 @@ def exam_70_dm_agent_report_ingest_and_cursor():
 
 
 def exam_71_dm_adapter_refusal_and_style():
-    ex = Exam("exam-71", "TikTok adapter refuses; style gate + media fallback hold")
+    ex = Exam("exam-71", "TikTok adapter ready (bodies readable on web); style gate + media fallback hold")
     home = fresh_home()
     setup_account(home)
     import json as _json
+    run(home, None, "dm-agent", "start", "--platform", "tiktok",
+        "--account", "main")
     r = run(home, None, "dm-agent", "tick", "--platform", "tiktok",
-            "--account", "main")
+            "--account", "main", "--trigger", "manual")
     res = _json.loads(r.stdout)
-    ex.check("tiktok tick refuses with documented reason",
-             res.get("refused") is True and "app-only" in res.get("reason", ""),
-             res.get("reason", "")[:80])
+    ex.check("tiktok tick issues dm_check (adapter ready)",
+             res.get("ok") is True and res.get("ticket_id"),
+             str(res.get("ticket_id")))
+    ex.check("tiktok tick instructions are read-only + web",
+             res.get("ok") is True
+             and any("tiktok.com/messages" in s
+                     for s in res["instructions"]["steps"])
+             and not any("Type exactly this message" in s
+                        for s in res["instructions"]["steps"]),
+             str(len(res["instructions"]["steps"])))
     sys.path.insert(0, REPO)
     from dm_agents import style as style_mod
     from dm_agents import replier as replier_mod

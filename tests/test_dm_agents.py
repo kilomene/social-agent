@@ -244,17 +244,28 @@ def test_idle_thread_parked_after_window(home, monkeypatch):
     assert row["idle_parked"] == 1
 
 
-# --------------------------------------------------- tiktok adapter refuse ---
+# --------------------------------------------------- tiktok adapter ready ---
 
-def test_tiktok_adapter_refuses_with_documented_reason():
+def test_tiktok_adapter_ready_with_web_readable_bodies():
     ok, reason = tiktok_adapter.readiness()
-    assert ok is False
-    assert "app-only" in reason
-    assert "2026-09-25" in reason
+    assert ok is True
+    assert "readable on web" in reason
+    assert tiktok_adapter.STATUS == "ready"
+    steps = tiktok_adapter.check_steps("main", [])
+    assert isinstance(steps, list) and len(steps) >= 4
+    assert any("tiktok.com/messages" in s for s in steps)
+    assert any("isn't supported" in s for s in steps)  # placeholder honesty
+    norm = tiktok_adapter.normalize({"threads": [
+        {"thread_id": "dagreat00100", "messages": [
+            {"id": "m1", "from": "them", "text": "How are you??", "ts": 1.0},
+            {"id": "m2", "from": "me", "text": "doing well", "ts": 2.0},
+        ]}]})
+    assert [m["sender"] for m in norm] == ["them", "me"]
+    assert norm[0]["thread_id"] == "dagreat00100"
     a = DMAgent("/tmp/nope", "tiktok", "main")
     res = a.tick()
-    assert res["ok"] is False and res["refused"] is True
-    assert "app-only" in res["reason"]
+    assert res.get("refused") is not True
+    assert "app-only" not in str(res)
 
 
 def test_registry_lists_four_platforms():

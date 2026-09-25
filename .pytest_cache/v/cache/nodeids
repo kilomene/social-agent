@@ -93,6 +93,7 @@
   "tests/test_dm_agents.py::test_sweep_removes_bare_display_name_alias_rows",
   "tests/test_dm_agents.py::test_tick_issues_dm_check_ticket_with_receipts",
   "tests/test_dm_agents.py::test_tick_skips_before_interval_without_trigger",
+  "tests/test_dm_agents.py::test_tiktok_adapter_ready_with_web_readable_bodies",
   "tests/test_dm_agents.py::test_tiktok_adapter_refuses_with_documented_reason",
   "tests/test_dm_agents.py::test_trigger_jumps_queue_but_not_pileup",
   "tests/test_dual_backup.py::test_cache_excluded_from_snapshots",
