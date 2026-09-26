@@ -2002,8 +2002,8 @@ def exam_70_dm_agent_report_ingest_and_cursor():
     r = run(home, None, "dm-agent", "status", "--platform", "x",
             "--account", "main")
     st = _json.loads(r.stdout)
-    ex.check("cursor advanced to m3 and pending cleared",
-             st["threads"][0]["last_seen_id"] == "m3"
+    ex.check("cursor advanced to newest message's fingerprint and pending cleared",
+             str(st["threads"][0]["last_seen_id"]).startswith("fp:")
              and st["pending_check"] == "",
              str(st["threads"][0]["last_seen_id"]))
     # Same observation again: no new inbound, no re-queue.

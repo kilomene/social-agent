@@ -21,7 +21,8 @@ from dm_agents import style as style_mod
 from dm_agents import replier as replier_mod
 from dm_agents.agent import (DMAgent, POLL_INTERVAL_MIN,
                              POLL_INTERVAL_DEFAULT,
-                             TARGET_INTERVAL_ASPIRATION)
+                             TARGET_INTERVAL_ASPIRATION,
+                             FP_CURSOR_PREFIX, message_fingerprint)
 from dm_agents.platforms import tiktok as tiktok_adapter
 from hands import tickets as tickets_mod
 from hands import steps as steps_mod
@@ -84,8 +85,14 @@ def test_report_advances_cursor_per_thread(home, monkeypatch):
         ("c2", "m2", "them", "are you around?", now - 5),
     ))
     assert res["ok"]
-    assert dm_state.get_last_seen(home, "x", "main", "c1") == "m1"
-    assert dm_state.get_last_seen(home, "x", "main", "c2") == "m2"
+    # Cursor advanced to a fingerprint of the newest observed message per
+    # thread (not the raw browser id — those churn every read cycle).
+    assert dm_state.get_last_seen(home, "x", "main", "c1") == \
+        message_fingerprint("c1", {"sender": "them", "text": "hey",
+                                   "ts": now - 10})
+    assert dm_state.get_last_seen(home, "x", "main", "c2") == \
+        message_fingerprint("c2", {"sender": "them", "text": "are you around?",
+                                   "ts": now - 5})
 
 
 # ------------------------------------------------------- duplicate guard ---
@@ -117,7 +124,9 @@ def test_inbound_already_answered_in_thread_is_skipped(home, monkeypatch):
     ))
     # m1 was already answered in-thread by m2: no draft.
     assert sum(len(t["replies_queued"]) for t in res["threads"]) == 0
-    assert dm_state.get_last_seen(home, "x", "main", "c1") == "m2"
+    assert dm_state.get_last_seen(home, "x", "main", "c1") == \
+        message_fingerprint("c1", {"sender": "me", "text": "hey! what's up?",
+                                   "ts": now - 50})
 
 
 def test_messages_processed_oldest_first(home, monkeypatch):
@@ -333,8 +342,10 @@ def test_dm_send_refused_at_ticket_issuance_on_x(home):
     assert t["refused"] == []
     assert len(t["replies_queued"]) == 1
     qid = t["replies_queued"][0]["approval_id"]
-    # cursor still advances: seen means seen
-    assert dm_state.get_last_seen(home, "x", "main", "c1") == "m1"
+    # cursor still advances (as a message fingerprint): seen means seen
+    assert dm_state.get_last_seen(home, "x", "main", "c1") == \
+        message_fingerprint("c1", {"sender": "them", "text": "hey there",
+                                   "ts": now - 5})
     # approving must NOT issue a dm_send ticket on X: prohibited.
     with pytest.raises(ToSRefusal):
         aq.approve(home, qid, decided_by="user")
@@ -360,6 +371,52 @@ def test_dedup_falls_back_to_timestamps_when_cursor_unknown(home):
     assert len(t["replies_queued"]) == 1
     item = aq.get(home, t["replies_queued"][0]["approval_id"])
     assert item["payload"]["in_reply_to"] == "m_new"
+
+
+def test_report_dedups_across_browser_id_churn(home, monkeypatch):
+    # Live incident 2026-09-25: the TikTok DM loop drafted duplicate
+    # replies every cycle for already-seen messages. Root cause: the live
+    # browser invents fresh message ids on every read cycle (msg-1..msg-6
+    # one cycle, a different scheme the next) and timestamps jitter a few
+    # seconds, so the raw-id cursor never matched and the timestamp
+    # fallback treated the same messages as new. The cursor is now a
+    # content fingerprint, so the second cycle must see zero new messages.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home)
+    # Align to a minute boundary so the minute-bucketed fingerprint is
+    # deterministic no matter when the test runs.
+    now = time.time()
+    base = now - (now % 60) - 120
+    r1 = a.report(_msgs(
+        ("c1", "msg-1", "them", "hey, quick question?", base + 10),
+        ("c1", "msg-2", "them", "are you there?", base + 20),
+    ))
+    t1 = r1["threads"][0]
+    assert t1["new_inbound"] == 2
+    assert len(t1["replies_queued"]) == 2
+    cursor = dm_state.get_last_seen(home, "x", "main", "c1")
+    assert cursor.startswith(FP_CURSOR_PREFIX)
+    # Second read cycle: the SAME two messages, but the browser invented
+    # brand-new ids and the timestamps jittered a few seconds.
+    r2 = a.report(_msgs(
+        ("c1", "a", "them", "hey, quick question?", base + 13),
+        ("c1", "b", "them", "are you there?", base + 24),
+    ))
+    t2 = r2["threads"][0]
+    assert t2["new_inbound"] == 0
+    assert t2["replies_queued"] == []
+    assert t2["rate_limited"] == []
+    # ...and a genuinely new message in a third cycle still queues exactly
+    # one draft.
+    r3 = a.report(_msgs(
+        ("c1", "x", "them", "hey, quick question?", base + 13),
+        ("c1", "y", "them", "are you there?", base + 24),
+        ("c1", "z", "them", "one more thing!", base + 40),
+    ))
+    t3 = r3["threads"][0]
+    assert t3["new_inbound"] == 1
+    assert len(t3["replies_queued"]) == 1
 
 
 # -------------------------------------- thread-id normalization ---
@@ -496,10 +553,13 @@ def test_mixed_format_report_no_duplicates_no_spurious_drafts(home,
     assert t["new_inbound"] == 0
     assert t["replies_queued"] == []
     assert t["rate_limited"] == []
-    # one row, canonical id, cursor intact — no duplicate bare-id row
+    # one row, canonical id, cursor advanced to the newest message's
+    # fingerprint — no duplicate bare-id row
     rows = dm_state.list_threads(home, "x", "main")
     assert [r["thread_id"] for r in rows] == [bare]
-    assert dm_state.get_last_seen(home, "x", "main", bare) == "m2"
+    assert dm_state.get_last_seen(home, "x", "main", bare) == \
+        message_fingerprint(bare, {"sender": "them", "text": "are you there",
+                                   "ts": now - 50})
 
 
 def test_new_inbound_after_merge_still_queues(home, monkeypatch):
@@ -519,7 +579,9 @@ def test_new_inbound_after_merge_still_queues(home, monkeypatch):
     t = res["threads"][0]
     assert t["new_inbound"] == 1
     assert len(t["replies_queued"]) == 1
-    assert dm_state.get_last_seen(home, "x", "main", bare) == "m2"
+    assert dm_state.get_last_seen(home, "x", "main", bare) == \
+        message_fingerprint(bare, {"sender": "them", "text": "new question here",
+                                   "ts": now - 5})
     assert [r["thread_id"] for r in
             dm_state.list_threads(home, "x", "main")] == [bare]
 

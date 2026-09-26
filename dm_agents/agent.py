@@ -36,7 +36,9 @@ stop_after_idle_hours (default 48) are parked (no longer checked) until
 new inbound unparks them.
 """
 
+import hashlib
 import json
+import re
 import time
 
 from . import get_adapter, state as state_mod
@@ -49,6 +51,43 @@ POLL_INTERVAL_MIN = 300
 TARGET_INTERVAL_ASPIRATION = 35
 STOP_AFTER_IDLE_HOURS_DEFAULT = 48
 FIRST_RUN_LOOKBACK_S = 24 * 3600
+
+# Prefix marking a last_seen_id cursor as a message fingerprint rather than
+# a raw browser-supplied id. Lets report() tell the two cursor formats
+# apart so legacy browser-id cursors keep working for one cycle while new
+# cursors advance to fingerprints.
+FP_CURSOR_PREFIX = "fp:"
+# Browser timestamps can jitter a few seconds between read cycles; bucketing
+# to the minute keeps the fingerprint stable across re-reads of the same
+# message.
+FP_TS_BUCKET_S = 60
+
+
+def _normalize_fingerprint_text(text):
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def message_fingerprint(thread_id, msg):
+    """Stable cross-cycle identity for one observed DM.
+
+    The live browser invents message ids fresh on every read cycle, so a
+    raw browser id can never be trusted as an already-seen marker across
+    cycles (2026-09-25: the TikTok loop drafted duplicate replies every
+    cycle for the same already-seen messages). The fingerprint binds the
+    canonical thread id, sender, whitespace-normalized text, and the
+    timestamp rounded down to the minute. Two reads of the same message
+    produce the same fingerprint even when both the id and the exact
+    timestamp differ.
+    """
+    tid = state_mod.canonical_thread_id(thread_id)
+    try:
+        bucket = int(float(msg.get("ts") or 0.0) // FP_TS_BUCKET_S)
+    except (TypeError, ValueError):
+        bucket = 0
+    body = "|".join((tid, str(msg.get("sender") or ""),
+                     _normalize_fingerprint_text(msg.get("text")),
+                     str(bucket)))
+    return FP_CURSOR_PREFIX + hashlib.sha1(body.encode("utf-8")).hexdigest()
 
 
 class DMAgent:
@@ -286,7 +325,24 @@ class DMAgent:
                                         self.account, tid)
             last_seen = tstate.get("last_seen_id") or ""
             ids = [m["msg_id"] for m in msgs]
-            if last_seen and last_seen in ids:
+            fps = [message_fingerprint(tid, m) for m in msgs]
+            if last_seen.startswith(FP_CURSOR_PREFIX):
+                # Fingerprint cursor (written by report() since the
+                # browser-id-churn fix): stable across cycles even when the
+                # browser invents fresh message ids on every read.
+                if last_seen in fps:
+                    new = msgs[fps.index(last_seen) + 1:]
+                else:
+                    # Cursor not found among the observed fingerprints
+                    # (history scrolled past it): fall back to timestamps —
+                    # only inbound newer than the last recorded inbound
+                    # counts as new.
+                    last_in_ts = tstate.get("last_inbound_at") or 0.0
+                    new = [m for m in msgs
+                           if m["sender"] == "them"
+                           and ((m["ts"] or 0) > last_in_ts
+                                or (not m["ts"] and not last_in_ts))]
+            elif last_seen and last_seen in ids:
                 new = msgs[ids.index(last_seen) + 1:]
             elif not last_seen:
                 # First sight of this thread: only treat recent inbound as
@@ -374,13 +430,16 @@ class DMAgent:
                     {"approval_id": item["id"], "draft": draft,
                      "intent": info["intent"], "risk": info["risk"]})
             # Advance the cursor past everything observed — seen means seen,
-            # whether or not a reply was queued.
+            # whether or not a reply was queued. The cursor is the newest
+            # message's fingerprint, not its browser id: browser ids are
+            # re-invented every read cycle, so only the fingerprint is a
+            # stable already-seen marker across cycles.
             newest = msgs[-1]
             inbound_msgs = [m for m in msgs if m["sender"] == "them"]
             newest_in = inbound_msgs[-1] if inbound_msgs else None
             state_mod.set_last_seen(
                 self.home, self.platform, self.account, tid,
-                newest["msg_id"],
+                message_fingerprint(tid, newest),
                 last_inbound_id=newest_in["msg_id"] if newest_in else "",
                 last_inbound_ts=newest_in["ts"] if newest_in else 0.0)
             summary["threads"].append(tinfo)
