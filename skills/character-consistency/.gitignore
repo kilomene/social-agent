@@ -1,0 +1,22 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Python (if any tooling is added later)
+__pycache__/
+*.pyc
+
+# Packaged skill builds
+dist/
+*.skill
+
+# Example/generated project files users create when USING the skill
+# (these live in their own project folders, not this repo, but excluded
+# just in case someone runs the workflow inside a clone of this repo)
+character-bible.md
+continuity-log.md
