@@ -700,3 +700,35 @@ def test_report_never_reproposes_decided_messages(home, monkeypatch):
     item = aq.get(home, t["replies_queued"][0]["approval_id"])
     assert item is not None
     assert item["payload"]["in_reply_to"] == "m3"
+
+
+# --------------------------------- stable sort tiebreak (2026-09-25) -----
+
+def test_normalize_sort_stable_across_cycles_with_reinvented_ids():
+    """Ts ties must order identically when browser ids churn.
+
+    Regression: the TikTok adapter sorted ts ties by the browser-invented
+    msg_id; every read cycle invents new ids, so ordering flipped and the
+    fingerprint cursor re-flagged already-seen messages as new (duplicate
+    drafts every cycle). normalize() must now break ties with the stable
+    cross-cycle message fingerprint instead.
+    """
+    now = 1790382700.0
+    cycle1 = {"threads": [{"thread_id": "t1", "messages": [
+        {"id": "zz-3", "from": "them", "text": "second", "ts": now},
+        {"id": "aa-1", "from": "them", "text": "first", "ts": now},
+    ]}]}
+    cycle2 = {"threads": [{"thread_id": "t1", "messages": [
+        {"id": "synthetic-999", "from": "them", "text": "second", "ts": now},
+        {"id": "synthetic-111", "from": "them", "text": "first", "ts": now},
+    ]}]}
+    order1 = [m["text"] for m in tiktok_adapter.normalize(cycle1)]
+    order2 = [m["text"] for m in tiktok_adapter.normalize(cycle2)]
+    assert order1 == order2 == ["first", "second"]
+
+
+def test_fingerprint_reexported_from_state():
+    """agent.py keeps re-exporting the canonical fingerprint helpers."""
+    from dm_agents import agent as agent_mod
+    assert agent_mod.message_fingerprint is dm_state.message_fingerprint
+    assert agent_mod.FP_CURSOR_PREFIX == dm_state.FP_CURSOR_PREFIX
