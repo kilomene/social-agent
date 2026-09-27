@@ -182,3 +182,39 @@ def test_topic_match_accepts_morphological_variants(home, tmp_path, monkeypatch)
     # short topic word 'ai' must not match inside unrelated words
     ok, _ = autonomy_mod.check_scope("x", "post", "He said it was plain luck.")
     assert not ok
+
+
+def test_topic_match_accepts_shorter_root_in_text(home, tmp_path, monkeypatch):
+    """Regression: 2026-09-25 growth round (facebook) refused a post about
+    building real products because the text used the shorter root 'build'
+    while the topic says 'building'. The stemmer only matched longer
+    variants ('automation'/'automated'), not shorter roots ('building'/
+    'build'). Root comparison is now bidirectional.
+    """
+    import autonomy as autonomy_mod
+    import missions as missions_mod
+    mdir = str(tmp_path / "missions")
+    monkeypatch.setenv("SOCIAL_AGENT_MISSIONS", mdir)
+    missions_mod.create_mission(
+        "topictest2", ["facebook"], ["ai video", "automation",
+                                     "building real products"],
+        ["post"], {"max_posts_per_day": 6})
+    autonomy_mod.grant("topictest2")
+    # the real refused post: about building real products, uses 'build'
+    ok, reason = autonomy_mod.check_scope(
+        "facebook", "post",
+        "Shipped a small tool this week and watched real people actually "
+        "use it. That's the part nobody warns you about when you build "
+        "products. The idea is the easy 10 percent. The other 90 is "
+        "unglamorous: buttons that don't work, messages that never send, "
+        "things that break at 2am. But when someone tells you it saved "
+        "their afternoon? Worth every hour.")
+    assert ok, f"on-topic post refused (false negative): {reason}"
+    # longer variants still match ('automated' vs topic 'automation')
+    ok, _ = autonomy_mod.check_scope(
+        "facebook", "post", "My automated render pipeline finally works.")
+    assert ok
+    # genuinely off-topic still refused
+    ok, reason = autonomy_mod.check_scope(
+        "facebook", "post", "What a beautiful sunset at the beach today.")
+    assert not ok and "topics" in reason
