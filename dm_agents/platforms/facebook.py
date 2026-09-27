@@ -73,5 +73,12 @@ def normalize(raw):
                 "ts": float(m.get("ts") or 0.0),
             })
     # Oldest first so per-thread processing is chronological.
-    out.sort(key=lambda m: (m["thread_id"], m["ts"], m["msg_id"]))
+    # Oldest first so per-thread processing is chronological. Ts ties
+    # break on the stable cross-cycle message fingerprint, NOT the
+    # browser-invented msg_id (re-invented every read cycle; using it
+    # here flipped ordering across cycles and re-flagged already-seen
+    # messages as new — 2026-09-25 TikTok duplicate-draft bug).
+    from dm_agents.state import message_fingerprint
+    out.sort(key=lambda m: (m["thread_id"], m["ts"],
+                            message_fingerprint(m["thread_id"], m)))
     return out
