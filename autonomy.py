@@ -109,8 +109,12 @@ def _topic_matches(topic, text):
             if tw not in hay_words:
                 return False
         else:
-            stem = tw[:6]
-            if not any(len(w) > 3 and w.startswith(stem) for w in hay_words):
+            # 5-char root comparison, bidirectional: matches both longer
+            # variants ('automation'/'automated') and shorter roots in the
+            # text ('building'/'build'). Exact-phrase check above handles
+            # the common case; this is the morphological fallback.
+            root = tw[:5]
+            if not any(len(w) > 3 and w[:5] == root for w in hay_words):
                 return False
     return True
 
