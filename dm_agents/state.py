@@ -29,10 +29,28 @@ AGENT_THREAD = "__agent__"
 _THREAD_SUFFIX_RE = re.compile(r"^(.*)\s\(([^()]*)\)$")
 
 
+# Display-name / legacy id aliases: thread-id forms the browser or the
+# worker reports that cannot be derived from the handle alone, so
+# canonical_thread_id() maps them to the one canonical row. Without this,
+# one conversation accumulates several state rows with independent cursors
+# and the loop re-drafts replies to already-seen messages every cycle
+# (seen live 2026-09-29: the TikTok web client labels the @dagreat00100
+# thread by its display name "生き甲斐" on some reads, and older cycles
+# stored TikTok's numeric conversation id and a "-me" suffixed id).
+# Add new entries here when a contact's thread shows up under another id
+# form; the alias sweep in _sweep_variants() merges the rows automatically.
+THREAD_ALIASES = {
+    "生き甲斐": "dagreat00100",
+    "7435209668401250096": "dagreat00100",
+    "dagreat00100-me": "dagreat00100",
+}
+
+
 def canonical_thread_id(thread_id):
     """Strip display decoration to the bare thread id.
 
-    Removes a leading "@" and a trailing " (display name)" suffix.
+    Removes a leading "@" and a trailing " (display name)" suffix, then
+    resolves known display-name / legacy id aliases (THREAD_ALIASES).
     Idempotent: a bare id is returned unchanged. The "__agent__"
     pseudo-thread has no decoration and is unaffected.
     """
@@ -41,8 +59,8 @@ def canonical_thread_id(thread_id):
         tid = tid[1:].strip()
     m = _THREAD_SUFFIX_RE.match(tid)
     if m and m.group(1):
-        return m.group(1).strip()
-    return tid
+        tid = m.group(1).strip()
+    return THREAD_ALIASES.get(tid, tid)
 
 
 # Prefix marking a last_seen_id cursor as a message fingerprint rather than
@@ -142,34 +160,38 @@ def _sweep_display_name_aliases(home, platform, account):
 
 
 def _sweep_variants(home, platform, account):
-    """One-time merge of legacy suffixed thread ids into canonical rows.
+    """One-time merge of non-canonical thread ids into canonical rows.
 
-    Finds rows whose id carries a display suffix (e.g. "123 (Name
-    @handle)"), folds each into its canonical bare-id row — the freshest
-    row (max last_inbound_at, ties toward canonical) wins the cursor
-    fields — then deletes the variant rows. Also sweeps bare display-name
-    alias rows (see _sweep_display_name_aliases). Returns True when anything
-    was merged. Cheap no-op once no variants remain.
+    Finds rows whose id is not canonical — display suffixes (e.g. "123
+    (Name @handle)"), leading "@" handles, bare display-name aliases
+    (THREAD_ALIASES, e.g. "生き甲斐"), legacy numeric ids — folds each
+    into its canonical bare-id row. The freshest row (max last_inbound_at,
+    ties toward canonical) wins the cursor fields, then the variant rows
+    are deleted. Also sweeps "@"-handle alias rows (see
+    _sweep_display_name_aliases). Returns True when anything was merged.
+    Cheap no-op once no variants remain.
     """
     cx = mem_mod.connect(home)
     try:
         tids = [r["thread_id"] for r in cx.execute(
             "SELECT thread_id FROM dm_agent_state WHERE platform = ? "
-            "AND account_label = ? AND thread_id LIKE '% (%)'",
+            "AND account_label = ?",
             (platform, account)).fetchall()]
     finally:
         cx.close()
     groups = {}
     for t in tids:
         c = canonical_thread_id(t)
-        if c != t:
-            groups.setdefault(c, []).append(t)
+        groups.setdefault(c, []).append(t)
     if not groups:
         changed = False
     else:
         changed = False
         for canonical in sorted(groups):
-            variants = groups[canonical]
+            members = sorted(set(groups[canonical]))
+            variants = [m for m in members if m != canonical]
+            if not variants:
+                continue
             _ensure_canonical_row(home, platform, account, canonical)
             cx = mem_mod.connect(home)
             try:
@@ -187,13 +209,15 @@ def _sweep_variants(home, platform, account):
                                    r["thread_id"] == canonical))
                 cx.execute(
                     "UPDATE dm_agent_state SET last_seen_id = ?, "
-                    "last_inbound_id = ?, last_inbound_at = ?, active = ?, "
+                    "last_inbound_id = ?, last_inbound_at = ?, "
+                    "last_inbound_text = ?, active = ?, "
                     "stop_reason = ?, last_cycle = ?, last_cycle_ts = ?, "
                     "pending_check = ?, idle_parked = ?, updated_at = ? "
                     "WHERE platform = ? AND account_label = ? AND thread_id = ?",
                     (freshest.get("last_seen_id") or "",
                      freshest.get("last_inbound_id") or "",
                      float(freshest.get("last_inbound_at") or 0.0),
+                     freshest.get("last_inbound_text") or "",
                      freshest.get("active", 1),
                      freshest.get("stop_reason") or "",
                      freshest.get("last_cycle") or "",
@@ -284,12 +308,19 @@ def list_threads(home, platform, account, include_agent_row=False):
 
 
 def set_last_seen(home, platform, account, thread_id, last_seen_id,
-                  last_inbound_id="", last_inbound_ts=0.0):
-    """Advance the cursor after a thread has been processed."""
+                  last_inbound_id="", last_inbound_ts=0.0,
+                  last_inbound_text=""):
+    """Advance the cursor after a thread has been processed.
+
+    last_inbound_text (the newest inbound message's text) is kept so the
+    report() fallback can tell a re-observed message with a drifted
+    timestamp apart from a genuinely new one.
+    """
     _update(home, platform, account, thread_id,
             last_seen_id=last_seen_id or "",
             last_inbound_id=last_inbound_id or "",
             last_inbound_at=float(last_inbound_ts or 0.0),
+            last_inbound_text=str(last_inbound_text or "")[:500],
             idle_parked=0)
 
 
