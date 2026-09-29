@@ -20,22 +20,28 @@ AGENT_THREAD = "__agent__"
 # Older browser reads stored thread ids with a display suffix, e.g.
 # "1920160303695716352-2100845624027418624 (Zenas Ayansipe @dagreat00100)",
 # while current reads return the bare "1920160303695716352-2100845624027418624".
-# The suffix is display decoration, not identity: every state lookup and
-# write goes through canonical_thread_id() so both forms resolve to the one
-# canonical bare id.
+# The suffix is display decoration, not identity. Likewise, handle-form ids
+# arrive with or without the leading "@" ("@dagreat00100" vs "dagreat00100");
+# the "@" is decoration too (2026-09-29: the TikTok loop re-drafted phantom
+# replies every cycle because evidence "@dagreat00100" missed the stored
+# "dagreat00100" row). Every state lookup and write goes through
+# canonical_thread_id() so all forms resolve to the one canonical bare id.
 _THREAD_SUFFIX_RE = re.compile(r"^(.*)\s\(([^()]*)\)$")
 
 
 def canonical_thread_id(thread_id):
-    """Strip a trailing " (display name)" suffix to the bare thread id.
+    """Strip display decoration to the bare thread id.
 
+    Removes a leading "@" and a trailing " (display name)" suffix.
     Idempotent: a bare id is returned unchanged. The "__agent__"
-    pseudo-thread has no suffix and is unaffected.
+    pseudo-thread has no decoration and is unaffected.
     """
-    tid = str(thread_id or "")
+    tid = str(thread_id or "").strip()
+    if tid.startswith("@"):
+        tid = tid[1:].strip()
     m = _THREAD_SUFFIX_RE.match(tid)
     if m and m.group(1):
-        return m.group(1)
+        return m.group(1).strip()
     return tid
 
 
