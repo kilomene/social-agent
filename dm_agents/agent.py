@@ -50,12 +50,61 @@ POLL_INTERVAL_MIN = 300
 TARGET_INTERVAL_ASPIRATION = 35
 STOP_AFTER_IDLE_HOURS_DEFAULT = 48
 FIRST_RUN_LOOKBACK_S = 24 * 3600
+# Window for the "already decided" text match and the redrift check below:
+# the worker re-derives message timestamps from relative browser times, so
+# the same message can surface with a timestamp drifted by minutes or hours
+# across read cycles. A re-observed inbound with identical text inside this
+# window of the last recorded inbound is treated as the same message.
+DECIDED_TEXT_MATCH_WINDOW_S = 12 * 3600
 
 
 def _normalize_fingerprint_text(text):
     # Kept for backward compatibility; canonical implementation lives in
     # dm_agents.state alongside message_fingerprint.
     return state_mod._normalize_fingerprint_text(text)
+
+
+def _iso_to_ts(value):
+    """Parse an ISO-8601 timestamp to epoch seconds; 0.0 on failure."""
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# Coarse window for the decision-time proxy below: legacy payloads (queued
+# before inbound_ts existed) match on text plus the item's decided_at as a
+# stand-in for the message ts. The proxy can lag the true message ts by
+# days (a message first observed long after it was sent), so the window is
+# wide; genuinely new identical text sent after the window still drafts.
+LEGACY_TEXT_MATCH_WINDOW_S = 7 * 24 * 3600
+
+
+def _looks_like_redrift(m, tstate):
+    """True if this inbound is the recorded last inbound, re-observed.
+
+    The fingerprint cursor misses when the worker's derived timestamp for
+    a message drifts by more than the fingerprint's minute bucket across
+    read cycles; the timestamp fallback then re-flags the same message as
+    new (seen live 2026-09-29: "Okay 👍" re-drafted after its ts drifted).
+    Identical text within DECIDED_TEXT_MATCH_WINDOW_S of the last recorded
+    inbound means "already seen", not "new".
+    """
+    last_text = (tstate.get("last_inbound_text") or "").strip()
+    if not last_text:
+        return False
+    try:
+        last_ts = float(tstate.get("last_inbound_at") or 0.0)
+        mts = float(m.get("ts") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if not last_ts or not mts:
+        return False
+    return (_normalize_fingerprint_text(m.get("text")) ==
+            _normalize_fingerprint_text(last_text)
+            and abs(mts - last_ts) < DECIDED_TEXT_MATCH_WINDOW_S)
 
 
 class DMAgent:
@@ -275,10 +324,13 @@ class DMAgent:
             state_mod.set_pending_check(self.home, self.platform,
                                         self.account, "")
 
-        # Group oldest-first per thread.
+        # Group oldest-first per thread, keyed by CANONICAL thread id so
+        # two id forms of the same conversation in one evidence batch
+        # (e.g. "生き甲斐" and "dagreat00100") resolve to the one row.
         by_thread = {}
         for m in observed:
-            by_thread.setdefault(m["thread_id"], []).append(m)
+            by_thread.setdefault(
+                state_mod.canonical_thread_id(m["thread_id"]), []).append(m)
 
         summary = {"ok": True, "platform": self.platform,
                    "account": self.account,
@@ -302,14 +354,17 @@ class DMAgent:
                     new = msgs[fps.index(last_seen) + 1:]
                 else:
                     # Cursor not found among the observed fingerprints
-                    # (history scrolled past it): fall back to timestamps —
-                    # only inbound newer than the last recorded inbound
-                    # counts as new.
+                    # (history scrolled past it, or the worker's derived
+                    # timestamp drifted past the fingerprint's minute
+                    # bucket): fall back to timestamps — only inbound newer
+                    # than the last recorded inbound counts as new, and a
+                    # re-observed last inbound with a drifted ts is not new.
                     last_in_ts = tstate.get("last_inbound_at") or 0.0
                     new = [m for m in msgs
                            if m["sender"] == "them"
                            and ((m["ts"] or 0) > last_in_ts
-                                or (not m["ts"] and not last_in_ts))]
+                                or (not m["ts"] and not last_in_ts))
+                           and not _looks_like_redrift(m, tstate)]
             elif last_seen and last_seen in ids:
                 new = msgs[ids.index(last_seen) + 1:]
             elif not last_seen:
@@ -324,29 +379,75 @@ class DMAgent:
                 # timestamps — only inbound newer than the last recorded
                 # inbound counts as new. A message with no timestamp counts
                 # only when we have never recorded inbound for this thread.
+                # A re-observed last inbound with a drifted ts is not new.
                 last_in_ts = tstate.get("last_inbound_at") or 0.0
                 new = [m for m in msgs
                        if m["sender"] == "them"
                        and ((m["ts"] or 0) > last_in_ts
-                            or (not m["ts"] and not last_in_ts))]
+                            or (not m["ts"] and not last_in_ts))
+                       and not _looks_like_redrift(m, tstate)]
             inbound_new = [m for m in new if m["sender"] == "them"]
             # Duplicate guard: skip inbound already answered in-thread
             # (a "me" message at/after it), already queued for approval,
             # or already decided (approved/rejected/done). A rejection is
             # a decision: the same message is never re-proposed, so the
             # loop cannot re-queue every cycle what the operator refused.
+            # The browser re-invents message ids every read cycle, so the
+            # guard keys on the stable cross-cycle fingerprint too, and on
+            # identical text within a drift window (the worker re-derives
+            # timestamps from relative browser times; a drifted ts must
+            # not resurrect a decided message).
             me_ts = [m["ts"] for m in msgs if m["sender"] == "me"]
             seen_ids = set()
+            seen_fps = set()
+            # (normalized text, ts, is_proxy_ts) of decided inbound. Items
+            # queued before inbound_ts existed fall back to decided_at /
+            # proposed_at as a coarse ts proxy under a wide window.
+            seen_texts = []
             for st in ("pending", "approved", "rejected", "done"):
                 for i in approvals_queue.list_items(self.home, st):
                     if (i.get("type") == "dm"
                             and i.get("platform") == self.platform):
-                        mid = (i.get("payload") or {}).get("in_reply_to")
-                        if mid:
-                            seen_ids.add(mid)
+                        p = i.get("payload") or {}
+                        if p.get("in_reply_to"):
+                            seen_ids.add(p["in_reply_to"])
+                        if p.get("in_reply_fp"):
+                            seen_fps.add(p["in_reply_fp"])
+                        if p.get("inbound_text"):
+                            try:
+                                its = float(p.get("inbound_ts") or 0.0)
+                            except (TypeError, ValueError):
+                                its = 0.0
+                            proxy = False
+                            if not its:
+                                its = _iso_to_ts(i.get("decided_at")
+                                                 or i.get("proposed_at"))
+                                proxy = bool(its)
+                            if its:
+                                seen_texts.append(
+                                    (_normalize_fingerprint_text(
+                                        p["inbound_text"]),
+                                     its, proxy))
             todo = []
             for m in inbound_new:
                 if m["msg_id"] in seen_ids:
+                    continue
+                if message_fingerprint(tid, m) in seen_fps:
+                    # Same message re-observed under a churned browser id.
+                    continue
+                mtext = _normalize_fingerprint_text(m.get("text"))
+                suppressed = False
+                for t, its, proxy in seen_texts:
+                    if t != mtext or not m["ts"]:
+                        continue
+                    window = (LEGACY_TEXT_MATCH_WINDOW_S if proxy
+                              else DECIDED_TEXT_MATCH_WINDOW_S)
+                    if abs(m["ts"] - its) < window:
+                        # Already queued/decided (under a drifted or
+                        # churned id): never re-propose.
+                        suppressed = True
+                        break
+                if suppressed:
                     continue
                 if any(ts and m["ts"] and ts >= m["ts"] for ts in me_ts):
                     continue
@@ -364,7 +465,9 @@ class DMAgent:
                         summary=(f"DM reply to thread {tid} (rate-limited)"),
                         payload={"thread_id": tid,
                                  "in_reply_to": m["msg_id"],
+                                 "in_reply_fp": message_fingerprint(tid, m),
                                  "inbound_text": m["text"][:500],
+                                 "inbound_ts": m["ts"],
                                  "draft": "", "deferred": True},
                         reason=f"dm-agent: rate limit ({verdict.get('reason')})",
                         risk="normal", status="rate_limited",
@@ -386,7 +489,9 @@ class DMAgent:
                              f"{info['intent']}"),
                     payload={"thread_id": tid,
                              "in_reply_to": m["msg_id"],
+                             "in_reply_fp": message_fingerprint(tid, m),
                              "inbound_text": m["text"][:500],
+                             "inbound_ts": m["ts"],
                              "draft": draft,
                              "intent": info["intent"],
                              "media_requested": info["media_requested"],
@@ -409,7 +514,8 @@ class DMAgent:
                 self.home, self.platform, self.account, tid,
                 message_fingerprint(tid, newest),
                 last_inbound_id=newest_in["msg_id"] if newest_in else "",
-                last_inbound_ts=newest_in["ts"] if newest_in else 0.0)
+                last_inbound_ts=newest_in["ts"] if newest_in else 0.0,
+                last_inbound_text=newest_in["text"] if newest_in else "")
             summary["threads"].append(tinfo)
         state_mod.record_cycle(self.home, self.platform, self.account,
                                "report")
