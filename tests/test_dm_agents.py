@@ -732,3 +732,196 @@ def test_fingerprint_reexported_from_state():
     from dm_agents import agent as agent_mod
     assert agent_mod.message_fingerprint is dm_state.message_fingerprint
     assert agent_mod.FP_CURSOR_PREFIX == dm_state.FP_CURSOR_PREFIX
+
+
+# ---------------- display-name aliases + drift tolerance (2026-09-29) ------
+
+def test_thread_aliases_canonicalize_to_one_row():
+    # Live incident 2026-09-29: the TikTok web client labels the
+    # @dagreat00100 thread by its display name alone ("生き甲斐") on some
+    # reads; older cycles stored TikTok's numeric conversation id and a
+    # "-me" suffixed id. All of them must resolve to the one canonical row
+    # so cursors never split across id forms again.
+    c = dm_state.canonical_thread_id
+    assert c("生き甲斐") == "dagreat00100"
+    assert c("@dagreat00100 (生き甲斐)") == "dagreat00100"
+    assert c("@dagreat00100") == "dagreat00100"
+    assert c("7435209668401250096") == "dagreat00100"
+    assert c("dagreat00100-me") == "dagreat00100"
+    assert c("dagreat00100") == "dagreat00100"
+    assert c("__agent__") == "__agent__"
+
+
+def test_alias_rows_merge_freshest_cursor_wins(home):
+    # The bare display-name row holds the freshest cursor; the merge must
+    # fold it into the canonical handle row and delete the alias rows.
+    now = 1790422320.0  # the "Okay" message ts from the live incident
+    okay = {"sender": "them", "text": "Okay 👍", "ts": now}
+    fp_okay = message_fingerprint("dagreat00100", okay)
+    _seed_legacy_row(home, "tiktok", "main", "dagreat00100",
+                     last_seen_id="fp:stale", last_inbound_id="old",
+                     last_inbound_at=now - 100000)
+    _seed_legacy_row(home, "tiktok", "main", "生き甲斐",
+                     last_seen_id=fp_okay, last_inbound_id="x",
+                     last_inbound_at=now)
+    _seed_legacy_row(home, "tiktok", "main", "7435209668401250096",
+                     last_seen_id="fp:older", last_inbound_id="y",
+                     last_inbound_at=now - 200000)
+    rows = dm_state.list_threads(home, "tiktok", "main")
+    assert [r["thread_id"] for r in rows] == ["dagreat00100"]
+    merged = rows[0]
+    assert merged["last_seen_id"] == fp_okay
+    assert merged["last_inbound_at"] == now
+
+
+def test_report_no_phantom_after_alias_merge_with_drifted_ts(home,
+                                                             monkeypatch):
+    # Live incident 2026-09-29: after the merge, one row (dagreat00100)
+    # carries the "Okay 👍" cursor. The worker re-derives timestamps from
+    # relative browser times, so the same message can resurface with a ts
+    # drifted past the fingerprint's minute bucket. The redrift check must
+    # treat it as already seen, not new.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home, platform="tiktok", account="main")
+    now = 1790422320.0
+    okay = {"sender": "them", "text": "Okay 👍", "ts": now}
+    dm_state.set_last_seen(home, "tiktok", "main", "dagreat00100",
+                           message_fingerprint("dagreat00100", okay),
+                           last_inbound_id="fp:x", last_inbound_ts=now,
+                           last_inbound_text="Okay 👍")
+    # Same message, ts drifted by 2h, brand-new browser-invented id, and
+    # the evidence uses the display-name id form.
+    res = a.report(_msgs(
+        ("生き甲斐", "invented-1", "them", "Okay 👍", now + 7200)))
+    t = res["threads"][0]
+    assert t["thread_id"] == "dagreat00100"
+    assert t["new_inbound"] == 0
+    assert t["replies_queued"] == []
+    assert [r["thread_id"] for r in
+            dm_state.list_threads(home, "tiktok", "main")] == ["dagreat00100"]
+
+
+def test_report_genuinely_new_message_still_queues_after_redrift(home,
+                                                                monkeypatch):
+    # The redrift guard must not swallow a genuinely new message: different
+    # text is always new, even with a close timestamp.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home, platform="tiktok", account="main")
+    now = 1790422320.0
+    okay = {"sender": "them", "text": "Okay 👍", "ts": now}
+    dm_state.set_last_seen(home, "tiktok", "main", "dagreat00100",
+                           message_fingerprint("dagreat00100", okay),
+                           last_inbound_id="fp:x", last_inbound_ts=now,
+                           last_inbound_text="Okay 👍")
+    res = a.report(_msgs(
+        ("dagreat00100", "invented-1", "them", "Okay 👍", now + 7200),
+        ("dagreat00100", "invented-2", "them",
+         "are you still there?", now + 7300)))
+    t = res["threads"][0]
+    assert t["new_inbound"] == 1
+    assert len(t["replies_queued"]) == 1
+
+
+def test_decided_guard_matches_fingerprint_across_id_churn(home, monkeypatch):
+    # The browser re-invents message ids every read cycle, so matching the
+    # duplicate guard on msg_id alone lets a rejected message get
+    # re-proposed. The guard must also key on the stable fingerprint.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home, platform="tiktok", account="main")
+    tid = "dagreat00100"
+    now = 1790422320.0
+    msg = {"sender": "them", "text": "Okay 👍", "ts": now}
+    fp = message_fingerprint(tid, msg)
+    i1 = aq.propose(home, "dm", "tiktok", "main", summary="r",
+                    payload={"thread_id": tid, "in_reply_to": "churned-id-1",
+                             "in_reply_fp": fp, "inbound_text": "Okay 👍",
+                             "inbound_ts": now},
+                    reason="t", risk="normal")
+    aq.reject(home, i1["id"], reason="operator said no", decided_by="user")
+    # Same message, brand-new invented id, cursor missing so the fallback
+    # path runs — the guard must still suppress the re-proposal.
+    dm_state.set_last_seen(home, "tiktok", "main", tid, "fp:stale-cursor",
+                           last_inbound_id="x", last_inbound_ts=now - 10,
+                           last_inbound_text="something older")
+    res = a.report(_msgs((tid, "churned-id-2", "them", "Okay 👍", now)))
+    t = res["threads"][0]
+    assert t["replies_queued"] == []
+
+
+def test_decided_guard_text_window_suppresses_drifted_redraft(home,
+                                                              monkeypatch):
+    # Same text re-observed with a drifted ts inside the window, decided
+    # before (payloads from before in_reply_fp existed): no re-proposal.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home, platform="tiktok", account="main")
+    tid = "dagreat00100"
+    now = 1790422320.0
+    i1 = aq.propose(home, "dm", "tiktok", "main", summary="r",
+                    payload={"thread_id": tid, "in_reply_to": "old-id",
+                             "inbound_text": "Okay 👍", "inbound_ts": now},
+                    reason="t", risk="normal")
+    aq.reject(home, i1["id"], reason="operator said no", decided_by="user")
+    dm_state.set_last_seen(home, "tiktok", "main", tid, "fp:stale-cursor",
+                           last_inbound_id="x", last_inbound_ts=now - 10,
+                           last_inbound_text="something older")
+    res = a.report(_msgs((tid, "new-id", "them", "Okay 👍", now + 3600)))
+    assert res["threads"][0]["replies_queued"] == []
+
+
+def test_decided_guard_text_window_expires(home, monkeypatch):
+    # Same text far outside the window is treated as a genuine repeat.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home, platform="tiktok", account="main")
+    tid = "dagreat00100"
+    now = 1790422320.0
+    i1 = aq.propose(home, "dm", "tiktok", "main", summary="r",
+                    payload={"thread_id": tid, "in_reply_to": "old-id",
+                             "inbound_text": "Okay 👍", "inbound_ts": now},
+                    reason="t", risk="normal")
+    aq.reject(home, i1["id"], reason="operator said no", decided_by="user")
+    dm_state.set_last_seen(home, "tiktok", "main", tid, "fp:stale-cursor",
+                           last_inbound_id="x", last_inbound_ts=now - 10,
+                           last_inbound_text="something older")
+    res = a.report(_msgs((tid, "new-id", "them", "Okay 👍", now + 13 * 3600)))
+    assert len(res["threads"][0]["replies_queued"]) == 1
+
+
+def test_tiktok_check_steps_pin_thread_id_to_known_list():
+    steps = tiktok_adapter.check_steps(
+        "main", [{"thread_id": "dagreat00100", "last_seen_id": "fp:x"}])
+    blob = "\n".join(steps)
+    assert "dagreat00100" in blob
+    assert "COPIED EXACTLY" in blob
+    assert "生き甲斐" in blob  # the worked example names the failure mode
+
+
+def test_legacy_payload_uses_decision_time_proxy(home, monkeypatch):
+    # Payloads queued before inbound_ts existed fall back to decided_at as
+    # a coarse ts proxy under a wide window — the 2026-09-29 "Okay 👍"
+    # phantom (decided 16:32 PDT, message ts Sep-26) must stay suppressed.
+    from platforms import tos as tos_mod
+    monkeypatch.setattr(tos_mod, "check_tos", lambda *a, **k: {"status": "ok"})
+    a = _start(home, platform="tiktok", account="main")
+    tid = "dagreat00100"
+    now = 1790422320.0  # the real Sep-26 "Okay" ts
+    i1 = aq.propose(home, "dm", "tiktok", "main", summary="r",
+                    payload={"thread_id": tid, "in_reply_to": "churned-1",
+                             "inbound_text": "Okay 👍"},
+                    reason="t", risk="normal")
+    aq.reject(home, i1["id"], reason="operator said no", decided_by="user")
+    dm_state.set_last_seen(home, "tiktok", "main", tid, "fp:stale-cursor",
+                           last_inbound_id="x", last_inbound_ts=now - 10**6,
+                           last_inbound_text="something older")
+    # Re-observed days later with a drifted ts: suppressed via the proxy.
+    res = a.report(_msgs((tid, "churned-2", "them", "Okay 👍", now + 3600)))
+    assert res["threads"][0]["replies_queued"] == []
+    # ...but a genuinely new identical text well after the proxy window
+    # still drafts (proxy compares against decided_at, not the old ts).
+    res = a.report(_msgs(
+        (tid, "churned-3", "them", "Okay 👍", now + 12 * 24 * 3600)))
+    assert len(res["threads"][0]["replies_queued"]) == 1
