@@ -47,9 +47,17 @@ def check_steps(account, threads):
          "Download TikTok app to view this message.]\" — report those "
          "verbatim as unsupported; never guess what they contain."),
         ("For every thread, return JSON shaped like: "
-         '{"threads": [{"thread_id": "<id or handle>", "messages": '
+         '{"threads": [{"thread_id": "<COPIED EXACTLY from the known-threads '
+         'list above>", "messages": '
          '[{"id": "<message id or timestamp key>", "from": "them"|"me", '
          '"text": "<message text>", "ts": <unix timestamp>}]}]}.'),
+        ("CRITICAL — thread_id stability: each thread's thread_id in the "
+         "evidence JSON MUST be copied EXACTLY, character for character, "
+         "from the 'Known threads from last time' list above when it "
+         "matches a thread you read. Never substitute the display name or "
+         "header text shown in the app (e.g. use 'dagreat00100', NOT "
+         "'生き甲斐' or '@dagreat00100'). Only a thread that is genuinely "
+         "NOT in that list may introduce a new id."),
         ("Do NOT reply to anything, do NOT open links, do NOT change any "
          "setting. Reading only. Attach the JSON as the fulfillment "
          "evidence of the dm_check ticket."),
