@@ -79,6 +79,7 @@ def _iso_to_ts(value):
 # stand-in for the message ts. The proxy can lag the true message ts by
 # days (a message first observed long after it was sent), so the window is
 # wide; genuinely new identical text sent after the window still drafts.
+# Added 2026-09-29 after the "Okay 👍" phantom redrafted 4x in one day.
 LEGACY_TEXT_MATCH_WINDOW_S = 7 * 24 * 3600
 
 
