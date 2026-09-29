@@ -21,7 +21,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 DB_NAME = "memory.db"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # ---------------------------------------------------------------- schema ---
 
@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS dm_agent_state (
     pending_check TEXT DEFAULT '',
     idle_parked INTEGER DEFAULT 0,
     PRIMARY KEY (platform, account_label, thread_id));
+""",
+    5: """
+ALTER TABLE dm_agent_state ADD COLUMN last_inbound_text TEXT DEFAULT '';
 """,
 }
 
