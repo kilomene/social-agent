@@ -13,10 +13,10 @@ from core import memory as mem
 
 def test_schema_v3_migrates_cleanly(home):
     mem.init_db(home)
-    assert mem.schema_version(home) == 4  # v3 + dm_agent_state
+    assert mem.schema_version(home) == 5  # v3 + dm_agent_state + inbound text
     # re-running is idempotent
     mem.init_db(home)
-    assert mem.schema_version(home) == 4
+    assert mem.schema_version(home) == 5
     # the dm_agent_state table exists with its key columns
     cx = mem.connect(home)
     try:
@@ -25,7 +25,8 @@ def test_schema_v3_migrates_cleanly(home):
     finally:
         cx.close()
     for col in ("platform", "account_label", "thread_id", "last_seen_id",
-                "last_inbound_at", "active", "pending_check", "idle_parked"):
+                "last_inbound_at", "last_inbound_text", "active",
+                "pending_check", "idle_parked"):
         assert col in cols
 
 
