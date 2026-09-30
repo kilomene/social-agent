@@ -38,16 +38,22 @@ approvals:
   note: "Unified approval queue (approvals/pending.json). per_type: require = human must approve (safe default for anything unlisted); auto = act immediately, still logged. hide_spam:auto only fires on pre-approved moderation.auto_hide rule matches. Profile changes ALWAYS need explicit approval, even in autonomous mode — there is no code path that auto-approves them."
 
 # Selective engagement: what counts as "interesting" enough to like/follow.
+# Owner order 2026-09-30: AI automation content is OUT. Themes are
+# friendship, business, dating, marketplace, hookup. US audience only.
 interests:
   enabled: true
   topics:
-    - ai video
-    - sora
-    - veo
-    - runway
+    - friendship
+    - business
+    - dating
+    - relationships
+    - marketplace
+    - hookup
   hashtags:
-    - aivideo
-    - generativeart
+    - friendship
+    - dating
+    - smallbusiness
+    - marketplace
   authors: []
   quality_signals:
     min_likes: 50
