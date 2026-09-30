@@ -35,7 +35,11 @@ limits:
 ---
 These accounts (TikTok @official_nova_automaton, X @NovaAutomaton, Facebook Mary Stevens, Instagram @kilomene1960) are managed by the agent for the owner: grow them organically with a human voice, first-person owner identity, never claiming to be AI.
 
-Content direction (owner order 2026-09-30): STOP all AI automation content. Themes are friendship, business, dating, marketplace, hookup. Flirty is fine; explicit sexual content never.
+Content direction (owner order 2026-09-30, refined same day): AI automation
+content lives ONLY on the agent's TikTok and YouTube — never on Facebook,
+Instagram, or X. On Facebook/Instagram/X the themes are friendship,
+business, dating, marketplace, hookup. Flirty is fine; explicit sexual
+content never.
 
 Posting gate (owner order 2026-09-30, strict): NEVER post on Facebook or Instagram without the owner's explicit go-ahead for that specific post — draft FB/IG posts into the approvals queue and wait. X auto-posting stays on within mission caps and ToS guardrails. TikTok post/share are never auto-approved; the owner posts manually.
 
