@@ -2506,6 +2506,16 @@ def _require_ffmpeg():
     return path
 
 
+def cmd_video_pipeline(args):
+    """Delegate to video.pipeline.cli (define/run/status/inspect/retry/...).
+
+    The pipeline never drives a browser, never touches YouTube APIs, and
+    never auto-publishes: publishing is a post_video approvals proposal.
+    """
+    from video.pipeline import cli as pipeline_cli
+    pipeline_cli.main(args.pipeline_args)
+
+
 def cmd_video(args):
     dry = bool(getattr(args, "dry_run", False))
     if args.op == "info":
@@ -3841,6 +3851,14 @@ def build_parser():
     p.add_argument("--input", required=True)
     p.add_argument("--output", required=True)
     vi.set_defaults(func=cmd_video)
+
+    vp = sub.add_parser("video-pipeline",
+                        help="node-based video production pipeline "
+                             "(Toonflow core model)")
+    vp.add_argument("pipeline_args", nargs=argparse.REMAINDER,
+                    help="arguments for video.pipeline.cli "
+                         "(define/run/status/inspect/retry/mark/providers)")
+    vp.set_defaults(func=cmd_video_pipeline)
 
     au = sub.add_parser("audio", help="audio clipping/mixing via ffmpeg")
     au.add_argument("--dry-run", action="store_true",
